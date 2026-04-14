@@ -44,6 +44,10 @@ Offset  Size  Type      Field
 0x60    4     u32       is_compressed — low byte: 1=SD0 compressed, 0=uncompressed
 ```
 
+## Version
+
+PK files have a 7-byte magic header `"ndpk"` + `0x01 0xFF 0x00` where the `0x01` byte serves as a format version indicator. A `file_revision` field (u32) is stored at the very end of the file, after the TOC offset. There is no version-conditional parsing -- all LU client PK files share the same binary layout.
+
 ## Key Details
 
 - Little-endian byte order

@@ -85,6 +85,20 @@ Type  ID    Description
 0x13        Project name size
 ```
 
+## Version
+
+LU client FEV files use version `0x00004000` (stored at offset 0x04). The version field controls which fields are present during deserialization:
+
+| Version threshold | Feature |
+|-------------------|---------|
+| >= 0x001A0000 | Envelope `enabled` field present |
+| >= 0x00260000 | Envelope DSP target type bitfield present |
+| >= 0x002E0000 | `sound_def_names_pool_size` field present (header bytes 8-11) |
+| >= 0x00320000 | `waveform_names_pool_size` field present (header bytes 12-15) |
+| >= 0x00390000 | Extended envelope flags present |
+
+LU's version (0x00004000) exceeds all known thresholds, so all conditional fields are present.
+
 ## Key Details
 
 - Little-endian byte order

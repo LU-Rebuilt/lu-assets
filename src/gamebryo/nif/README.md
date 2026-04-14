@@ -5,7 +5,14 @@
 
 ## Overview
 
-NIF is Gamebryo's binary scene graph format. LU uses version 20.3.0.9 with user_version 12 and user_version_2 34. Files contain a block-based structure where each block is a typed object (node, mesh, material, controller, etc.) referenced by index.
+NIF is Gamebryo's binary scene graph format. Files contain a block-based structure where each block is a typed object (node, mesh, material, controller, etc.) referenced by index.
+
+The LU client ships NIF/KF files in two versions:
+
+| Version | Hex | Notes |
+|---------|-----|-------|
+| **20.3.0.9** | 0x14030009 | Primary version, user_version 12, user_version_2 34 |
+| **20.2.0.8** | 0x14020008 | Older assets |
 
 ## Binary Layout
 

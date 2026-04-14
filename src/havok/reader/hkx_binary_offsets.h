@@ -1,10 +1,10 @@
-// Havok 5.5 / 7.x 32-bit binary packfile field offsets.
+// Havok 5.5 / 7.1 32-bit binary packfile field offsets.
 //
 // These offsets describe the in-packfile binary layout used by the binary
 // packfile extraction code to read physics shapes, rigid bodies, physics
 // systems, and physics data from the raw data section bytes.
 //
-// LEGO Universe ships Havok 5.5 (packfile version 5). Binary packfiles
+// LEGO Universe ships Havok 5.5 and 7.1 HKX files. Binary packfiles
 // store objects at their full runtime size with nosave fields zeroed.
 //
 // Shape base hierarchy:
@@ -194,7 +194,7 @@ namespace Off {
 	// =========================================================================
 	// hkpRigidBody / hkpEntity / hkpWorldObject (runtime layout)
 	//
-	// LEGO Universe ships Havok 5.5 (packfile version 5, 32-bit).
+	// LEGO Universe ships Havok 5.5 and 7.1 HKX files (packfile versions 5 and 7, 32-bit).
 	// Binary packfiles store objects at their full runtime size with
 	// nosave fields zeroed, so these runtime offsets apply directly.
 	//

@@ -65,6 +65,14 @@ When `size > 80`, extra bytes follow for codec-specific extended fields (not use
 
 Immediately follows all sample headers. Each sample's audio data is at an offset computed by summing previous samples' compressed_size values.
 
+## Version
+
+All 98 LU client FSB files are **FSB4** format:
+- Magic: `"FSB4"` (`0x34425346`)
+- Version field (offset 0x10): `0x00040000`
+
+FSB3 (magic `"FSB3"`) uses a different header layout and is not present in the LU client. The reader only supports FSB4.
+
 ## Key Details
 
 - Little-endian byte order

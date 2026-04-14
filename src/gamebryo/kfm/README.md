@@ -19,6 +19,16 @@ Offset  Size  Type      Field
 +0x05   N     char[N]   nif_path — relative path to the associated NIF mesh file
 ```
 
+## Version
+
+LU client KFM files use version **2.2.0.0b**. The version is encoded in the ASCII text header:
+
+```
+;Gamebryo KFM File Version 2.2.0.0b\n
+```
+
+The header is newline-terminated. The version string is parsed but not used for conditional logic -- all LU KFM files share the same binary layout after the header.
+
 ## Key Details
 
 - Text header is ASCII, terminated by newline character

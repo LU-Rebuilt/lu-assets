@@ -1,7 +1,7 @@
 // HKX file parser — reads Havok binary packfile, tagged binary, and XML formats.
 //
 // Dispatches to the correct reader based on file magic bytes:
-//   0x57E0E057 / 0x10C0C010 → binary packfile (Havok 5.5, used by LU client)
+//   0x57E0E057 / 0x10C0C010 → binary packfile (Havok 5.5/7.1, used by LU client)
 //   0xCAB00D1E / 0xD011FACE → tagged binary (Havok 2010+)
 //   "<?xml" / "<hkpackfile"  → Havok XML format
 //

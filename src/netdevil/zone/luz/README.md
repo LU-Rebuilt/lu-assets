@@ -5,14 +5,30 @@
 
 ## Overview
 
-LUZ files define the top-level structure of a game zone: which scenes (LVL files) compose it, player spawn points, zone boundaries, inter-zone transitions, and all NPC/platform/spawner/racing/rail paths. All shipped client files are version 41.
+LUZ files define the top-level structure of a game zone: which scenes (LVL files) compose it, player spawn points, zone boundaries, inter-zone transitions, and all NPC/platform/spawner/racing/rail paths.
+
+The LU client ships LUZ files in multiple versions:
+
+| Version | Notes |
+|---------|-------|
+| 30 | Oldest format |
+| 33 | |
+| 35 | |
+| 36 | Most common — bulk of live content |
+| 37 | |
+| 38 | |
+| 39 | |
+| 40 | |
+| **41** | Latest version — newer zones |
+
+Version affects which fields are present in headers, scenes, and paths. The parser handles all versions from 30 to 41.
 
 ## Binary Layout
 
 ```
 Offset  Size  Type      Field
 ------  ----  ----      -----
-0x00    4     u32       version (41 in shipped client)
+0x00    4     u32       version (30–41 in shipped client)
 +0x00   4     u32       file_revision (if version > 35)
 +0x00   4     u32       world_id
 +0x00   12    f32[3]    spawn_position (x, y, z)
@@ -79,11 +95,26 @@ Value  Type
 7      Rail — Ninjago rail paths
 ```
 
+## Version
+
+The LU client ships LUZ files in versions 30 through 41. The version field (u32 at offset 0x00) controls extensive conditional parsing:
+
+| Version threshold | Feature |
+|-------------------|---------|
+| > 30 | `zone_name` and `zone_description` strings present |
+| >= 32 | Transition data section present |
+| only v33 | Scene position, radius, and color fields (removed in later versions) |
+| 34-38 | 5-point transitions (vs. 2-point in <= 33 or >= 39) |
+| > 35 | `file_revision` field present |
+| >= 35 | Path chunk section present |
+
+Path waypoints also have per-path versioning (`path_version` field), controlling which path-type-specific fields are present (e.g. property display name at path_version >= 5, time-based movement at path_version >= 18).
+
 ## Key Details
 
 - Little-endian byte order
 - No magic number; version field is the first 4 bytes
-- All shipped client files are version 41
+- Client files range from version 30 to 41
 - Strings use u1_wstr (u8 length + UTF-16LE chars) or u4_wstr (u32 length + UTF-16LE chars)
 - Path waypoint configs use binary LDF (key-value pairs)
 - Scene filenames use backslash separators, normalized to forward slashes by readers

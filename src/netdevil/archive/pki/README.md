@@ -30,6 +30,10 @@ Offset  Size     Type      Field
   +0x10  4       u32       unknown
 ```
 
+## Version
+
+LU client uses PKI **version 3** (u32 at offset 0x00). This is the only version observed in shipped client files. The version field is the first 4 bytes of the file with no preceding magic number.
+
 ## Key Details
 
 - Little-endian byte order

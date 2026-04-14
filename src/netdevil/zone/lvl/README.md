@@ -79,6 +79,33 @@ Per particle:
   u4_wstr config — optional LDF config string
 ```
 
+## Versions
+
+LVL files use a **chunked format** where each chunk has independent versioning via the CHNK header's `header_version` and `data_version` fields. Chunk 1000 (File Info Block) contains the overall file version and revision.
+
+Known chunk IDs and their roles:
+
+| Chunk ID | Name | Description |
+|----------|------|-------------|
+| 1000 | FIB | File Info Block -- file version and revision |
+| 2000 | Environment | Lighting, fog, skydome, editor settings |
+| 2001 | Objects | Placed objects with LDF configs |
+| 2002 | Particles | Particle system placements |
+
+The `data_version` within each chunk controls which fields are present. Key version thresholds for chunk 2000 (Environment):
+
+| Version | Feature |
+|---------|---------|
+| >= 31 | Fog color |
+| >= 34 | Sky layer filename |
+| >= 36 | Directional light |
+| >= 37 | Editor color palette |
+| >= 39 | Draw distances (fog near/far, object distances) |
+| >= 40 | Per-group cull distances |
+| >= 45 | Blend time |
+
+For chunk 2001 (Objects): `node_type` present at version >= 38, `glom_id` at version >= 32, render technique at version >= 7.
+
 ## Key Details
 
 - Little-endian byte order
