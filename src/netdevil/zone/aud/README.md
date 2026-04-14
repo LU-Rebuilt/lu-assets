@@ -34,6 +34,10 @@ AUD files are single-element XML documents that define the audio environment for
 | musicParamValue   | f32    | Default value for the music parameter             |
 | boredomTime       | f32    | Seconds before ambient variety triggers (-1 = off)|
 
+## Version
+
+No versioning -- single-element XML format with no version attribute. A single format is used by all LU client files.
+
 ## Key Details
 
 - Standard XML format (not binary)

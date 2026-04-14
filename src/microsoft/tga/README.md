@@ -27,6 +27,10 @@ Offset  Size  Type      Field
 +var    var   u8[]      pixel_data
 ```
 
+## Version
+
+No versioning -- standard Truevision TGA format with no version field. The `image_type` byte determines the encoding (uncompressed vs. RLE) but there is no format version evolution. LU client files use the original TGA specification.
+
 ## Key Details
 
 - Little-endian byte order

@@ -47,6 +47,22 @@ LXFML is LEGO's standard XML format for brick model definitions. LU uses version
 - **RigidRef**: constraint axis (a), z-axis (z), and anchor position (t) as 3-float vectors
 - **Joint type**: "hinge" is the only observed type in client files
 
+## Versions
+
+LXFML version is specified by the `versionMajor` attribute on the root `<LXFML>` element. Three major versions exist:
+
+| Version | Application name | Hierarchy | Used by |
+|---------|-----------------|-----------|---------|
+| 2 | Models | Models/Part | Early LEGO models |
+| 4 | LDD | Scene/Group/Part | LEGO Digital Designer |
+| **5** | LDDExtended | Bricks/Part/Bone | LEGO Universe client |
+
+LU uses **version 5** exclusively (2,444 files in BrickModels/). Version affects the element hierarchy and camera format:
+- **v4**: Cameras use angle-axis rotation (angle, ax, ay, az) + target (tx, ty, tz)
+- **v5**: Cameras use a 12-float 4x3 transformation matrix (same format as Bone)
+- **v4**: Objects placed under `<Scene><Group><Part>` with explicit transform
+- **v5**: Objects placed under `<Bricks><Brick><Part><Bone>` with transform on Bone
+
 ## Key Details
 
 - Standard XML format parsed with pugixml

@@ -33,6 +33,10 @@ facing=0 rot=0 trail=0 time=0.0 ds=0 se=0 mt=0 dist=0.0 dmin=0.0 prio=0 loop=0
 | prio     | int   | Rendering priority                               |
 | loop     | int   | Loop override                                    |
 
+## Version
+
+No versioning -- plain text format with no header or version field. A single format is used by all LU client effect definition files.
+
 ## Key Details
 
 - Plain text format parsed line-by-line

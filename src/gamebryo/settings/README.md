@@ -53,6 +53,10 @@ Offset  Size  Type      Field
   Variable-length remaining data stored as raw bytes.
 ```
 
+## Version
+
+Settings files contain a version string in the header (u8 length prefix + ASCII string). All LU client files use version **"2.3.0"**. There is no version-conditional parsing -- the format layout is fixed for this version. The version is related to Gamebryo's NiKFMTool serialization version but is not the same as the KFM file version.
+
 ## Key Details
 
 - Little-endian byte order

@@ -15,6 +15,10 @@ SCM files are plain-text lists of slash commands, one per line. Used by game mas
 /setinventorysize 100
 ```
 
+## Version
+
+No versioning -- plain text format with no header or version field. A single format is used by all LU client macro files.
+
 ## Key Details
 
 - Plain text format, one slash command per line

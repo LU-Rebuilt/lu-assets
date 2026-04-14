@@ -54,6 +54,10 @@ Value  Type      Size    Description
 8      TEXT_8    4       String via pointer indirection (same as TEXT_4)
 ```
 
+## Version
+
+No versioning -- the FDB format has no magic number, version field, or file header beyond the initial `table_count`. A single format is used by the LU client's `cdclient.fdb`.
+
 ## Key Details
 
 - Little-endian byte order

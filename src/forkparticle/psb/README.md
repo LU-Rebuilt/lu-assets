@@ -140,6 +140,10 @@ Per texture (64 bytes each, num_textures entries):
 +0x04   60    char[60] path — null-terminated texture path
 ```
 
+## Version
+
+PSB files have no explicit version field. The `format_const` field at offset 0xC8 is always exactly `100.0` in all 11,366 client files and likely serves as a format version marker. The fixed structure sizes (`header_size` = 80, `data_size` = 420, `emitter_params_size` = 412) are invariant across all client files, indicating a single format version throughout LU's lifetime.
+
 ## Key Details
 
 - Little-endian byte order

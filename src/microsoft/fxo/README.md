@@ -70,6 +70,10 @@ Value  Type
 2      Int          5      Texture
 ```
 
+## Version
+
+FXO files are identified by the D3DX9 Effect signature `0xFEFF0901` at offset 0x00. There is no separate version field -- the signature itself encodes the format version (D3DX9 shader model). All 34 LU client effect files (32 .fxo + 2 .fxp) use this same signature. The format is DirectX 9 specific and does not vary between files.
+
 ## Key Details
 
 - Little-endian byte order

@@ -66,6 +66,17 @@ Offset  Size  Type      Field
 0x20    4     u8[4]     color — RGBA
 ```
 
+## Version
+
+Terrain files have a u16 version field at offset 0x00. Version 32 is a major threshold that changes the per-chunk layout:
+
+| Version | Layout differences |
+|---------|-------------------|
+| < 32 | `shader_id` and `texture_ids[4]` present; `color_map_res` = chunk width |
+| >= 32 | Separate `color_map_res`, `tex_map_res`, `texture_settings`, `blend_map`, and `scene_map` per chunk |
+
+All shipped LU client terrain files use version >= 32 with the extended chunk format.
+
 ## Key Details
 
 - Little-endian byte order

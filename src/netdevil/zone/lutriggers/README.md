@@ -33,6 +33,10 @@ LU Triggers files are XML documents that define trigger volumes and their event 
   - `target` (string): command target identifier
   - `args` (string): comma-separated command arguments
 
+## Version
+
+No versioning -- XML format with no version attribute. A single schema is used by all LU client files.
+
 ## Key Details
 
 - Standard XML format (not binary)

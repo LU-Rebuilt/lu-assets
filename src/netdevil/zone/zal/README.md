@@ -16,6 +16,10 @@ path\to\asset3.kfm
 ...
 ```
 
+## Version
+
+No versioning -- plain text format with no header or version field. A single format is used by all LU client files.
+
 ## Key Details
 
 - Plain text format, one file path per line

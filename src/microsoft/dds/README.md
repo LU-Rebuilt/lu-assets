@@ -66,6 +66,10 @@ DDPF_RGB            0x00040     Uncompressed RGB data
 DDPF_LUMINANCE      0x20000     Luminance data
 ```
 
+## Version
+
+DDS has no version field. The format is identified by its magic number `0x20534444` ("DDS ") and fixed 124-byte header size. All DDS files across all DirectX versions share the same base header layout. LU client files use DXT1, DXT3, and DXT5 block compression (BC1-BC3) as well as uncompressed RGB/RGBA. No DX10 extended headers are used in LU client files.
+
 ## Key Details
 
 - Little-endian byte order

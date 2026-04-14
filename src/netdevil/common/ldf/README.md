@@ -50,6 +50,10 @@ Offset  Size  Type      Field
   +N+1   M    wchar[M]  value — UTF-16LE encoded (M = value_len)
 ```
 
+## Version
+
+No versioning -- both text and binary LDF use a single format with no version field. The type ID enum is fixed across all usage contexts.
+
 ## Key Details
 
 - Text LDF: type IDs 2, 6, 10-12, 14+ are not used in practice

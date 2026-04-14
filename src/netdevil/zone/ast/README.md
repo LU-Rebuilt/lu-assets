@@ -16,6 +16,10 @@ A:res\textures\texture.dds
 A:res\mesh\model.nif
 ```
 
+## Version
+
+No versioning -- plain text format with no header or version field. A single format is used by all LU client files.
+
 ## Key Details
 
 - Plain text format, one entry per line

@@ -20,6 +20,10 @@ Offset  Size  Type      Field
 +0x04   N     u8[N]     zlib_data — zlib-compressed chunk (N = compressed_size)
 ```
 
+## Version
+
+The SD0 magic bytes include a version byte (`0x01`) at offset 3, but no version-conditional parsing exists. A single format is used by all LU client PK archives.
+
 ## Key Details
 
 - Little-endian byte order

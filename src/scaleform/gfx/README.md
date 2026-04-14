@@ -64,6 +64,10 @@ Type  Name               Description
 1000+ GFx extension tags Scaleform-proprietary (undocumented)
 ```
 
+## Version
+
+GFX files contain a SWF version byte at offset 0x03. All LU client GFX files use **SWF version 10**. The version determines which SWF tag types and ActionScript features are available, though the reader handles all tags generically. The GFX/CFX magic bytes (vs. standard SWF's FWS/CWS) indicate Scaleform-specific extensions, but the version semantics follow the standard SWF specification.
+
 ## Key Details
 
 - Little-endian byte order
