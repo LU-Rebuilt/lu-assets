@@ -1,0 +1,5 @@
+add_subdirectory(common)
+add_subdirectory(zone)
+add_subdirectory(database)
+add_subdirectory(archive)
+add_subdirectory(macros)

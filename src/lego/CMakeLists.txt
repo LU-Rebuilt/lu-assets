@@ -1,0 +1,3 @@
+add_subdirectory(lxfml)
+add_subdirectory(brick_geometry)
+add_subdirectory(brick_assembly)

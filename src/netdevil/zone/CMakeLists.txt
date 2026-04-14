@@ -1,0 +1,7 @@
+add_subdirectory(luz)
+add_subdirectory(lvl)
+add_subdirectory(terrain)
+add_subdirectory(lutriggers)
+add_subdirectory(aud)
+add_subdirectory(zal)
+add_subdirectory(ast)
