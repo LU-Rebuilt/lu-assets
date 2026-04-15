@@ -1,6 +1,7 @@
 #pragma once
 
 #include "havok/types/hkx_types.h"
+#include "havok/reader/hkx_binary_offsets.h"
 #include <filesystem>
 #include <vector>
 #include <string>
@@ -31,7 +32,7 @@ public:
 private:
     void Reset();
 
-    // Serialization helpers
+    // Serialization helpers — append to end of data section
     void WriteU8(uint8_t v);
     void WriteU16(uint16_t v);
     void WriteU32(uint32_t v);
@@ -43,6 +44,17 @@ private:
     void Pad(size_t alignment);
     void PadTo(size_t target);
     uint32_t Pos() const;
+
+    // Random-access writers — write at a specific position in the data section.
+    // The position must already be allocated (i.e. within m_DataSection.size()).
+    void WriteU8At(uint32_t pos, uint8_t v);
+    void WriteU16At(uint32_t pos, uint16_t v);
+    void WriteU32At(uint32_t pos, uint32_t v);
+    void WriteI8At(uint32_t pos, int8_t v);
+    void WriteFloatAt(uint32_t pos, float v);
+    void WriteVector4At(uint32_t pos, const Vector4& v);
+    void WriteQuaternionAt(uint32_t pos, const Quaternion& q);
+    void WriteTransformAt(uint32_t pos, const Transform& t);
 
     // Register a class for the classnames section
     uint32_t RegisterClass(const std::string& name);
@@ -87,6 +99,9 @@ private:
 
     // Map from ShapeInfo pointer to written data offset (for dedup)
     std::unordered_map<uint32_t, uint32_t> m_WrittenShapes;
+
+    // File version (5 = Havok 5.x, 7 = Havok 7.x) — affects field offsets
+    uint32_t m_FileVersion = 7;
 
     std::string m_Error;
 

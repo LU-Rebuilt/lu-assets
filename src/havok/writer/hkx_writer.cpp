@@ -70,6 +70,49 @@ void HkxWriter::WriteBytes(const void* data, size_t size) {
     m_DataSection.insert(m_DataSection.end(), p, p + size);
 }
 
+// --- Random-access writers ---
+
+void HkxWriter::WriteU8At(uint32_t pos, uint8_t v) {
+    m_DataSection[pos] = v;
+}
+
+void HkxWriter::WriteU16At(uint32_t pos, uint16_t v) {
+    std::memcpy(&m_DataSection[pos], &v, 2);
+}
+
+void HkxWriter::WriteU32At(uint32_t pos, uint32_t v) {
+    std::memcpy(&m_DataSection[pos], &v, 4);
+}
+
+void HkxWriter::WriteI8At(uint32_t pos, int8_t v) {
+    m_DataSection[pos] = static_cast<uint8_t>(v);
+}
+
+void HkxWriter::WriteFloatAt(uint32_t pos, float v) {
+    std::memcpy(&m_DataSection[pos], &v, 4);
+}
+
+void HkxWriter::WriteVector4At(uint32_t pos, const Vector4& v) {
+    WriteFloatAt(pos, v.x);
+    WriteFloatAt(pos + 4, v.y);
+    WriteFloatAt(pos + 8, v.z);
+    WriteFloatAt(pos + 12, v.w);
+}
+
+void HkxWriter::WriteQuaternionAt(uint32_t pos, const Quaternion& q) {
+    WriteFloatAt(pos, q.x);
+    WriteFloatAt(pos + 4, q.y);
+    WriteFloatAt(pos + 8, q.z);
+    WriteFloatAt(pos + 12, q.w);
+}
+
+void HkxWriter::WriteTransformAt(uint32_t pos, const Transform& t) {
+    WriteVector4At(pos, t.col0);
+    WriteVector4At(pos + 16, t.col1);
+    WriteVector4At(pos + 32, t.col2);
+    WriteVector4At(pos + 48, t.translation);
+}
+
 void HkxWriter::Pad(size_t alignment) {
     while (m_DataSection.size() % alignment != 0) m_DataSection.push_back(0);
 }
@@ -211,17 +254,20 @@ uint32_t HkxWriter::WriteShape(const ShapeInfo& shape) {
         WriteU32(shape.userData);  // +0x08 userData
         WriteU32(shape.shapeTypeEnum); // +0x0C type
         WriteFloat(shape.radius);  // +0x10 radius
-        PadTo(offset + 32);        // pad to +0x20 for AABB
-        // AABB at +0x20
-        WriteVector4(shape.aabbHalfExtents);  // +0x20
-        WriteVector4(shape.aabbCenter);        // +0x30
+        PadTo(offset + Off::CVS_AabbHalfExtents); // pad to +0x20
+        WriteVector4(shape.aabbHalfExtents);       // +0x20
+        WriteVector4(shape.aabbCenter);             // +0x30
         // Rotated vertices array at +0x40
         uint32_t vertArrayPtrOff = WriteArray(static_cast<uint32_t>(shape.rotatedVertices.size()));
         // numVertices at +0x4C
         WriteU32(static_cast<uint32_t>(shape.numVertices));
-        // Plane equations array at +0x50
+        // Plane equations offset differs by version:
+        //   v5/v6: +0x50 (immediately after numVertices)
+        //   v7:    +0x54 (4 bytes padding after numVertices)
+        PadTo(offset + Off::CVS_PlaneEquations(m_FileVersion));
         uint32_t planeArrayPtrOff = WriteArray(static_cast<uint32_t>(shape.planeEquations.size()));
-        // Connectivity at +0x5C (null ptr)
+        // Connectivity pointer
+        PadTo(offset + Off::CVS_Connectivity(m_FileVersion));
         WriteU32(0);
         Pad(16);
 
@@ -525,99 +571,87 @@ uint32_t HkxWriter::WriteShape(const ShapeInfo& shape) {
 
 uint32_t HkxWriter::WriteRigidBody(const RigidBodyInfo& rb) {
     Pad(16);
-    uint32_t offset = Pos();
-    AddVirtualFixup(offset, "hkpRigidBody");
+    uint32_t base = Pos();
+    AddVirtualFixup(base, "hkpRigidBody");
 
-    // hkpRigidBody serialized layout (Havok 7.x, 32-bit):
-    // This is a simplified version that produces the key fields.
-    // The full layout is complex with many nested structures.
+    // hkpRigidBody serialized layout (Havok 5.5/7.1, 32-bit):
+    //
+    // Binary packfiles store objects at their full runtime size (0x220 = 544 bytes)
+    // with nosave fields zeroed. All offsets from hkx_binary_offsets.h, verified
+    // via Ghidra RE of legouniverse.exe Havok reflection metadata.
+    //
+    // Pre-allocate the full object zeroed, then write fields at exact offsets.
+    PadTo(base + Off::RB_TotalSize);
 
-    // hkBaseObject + hkReferencedObject (8 bytes)
-    WriteU32(0);              // vtable
-    WriteU16(0); WriteU16(0); // memSizeAndFlags + refCount
+    // hkBaseObject + hkReferencedObject (vtable, memSizeAndFlags, refCount) — zeros
 
-    // hkpWorldObject: userData, world ptr (nosave), collidable
-    WriteU32(0); // world ptr (nosave, serialized as 0)
-    WriteU32(rb.userData);
+    // hkpWorldObject
+    // +0x08: world ptr (nosave, serialized as 0) — already zero
+    WriteU32At(base + Off::RB_UserData, rb.userData);
 
-    // Collidable: shape ptr at +0x10
-    uint32_t shapePtrOff = Pos();
-    WriteU32(0); // shape pointer (global fixup)
+    // hkpCollidable (embedded at +0x10)
+    uint32_t shapePtrOff = base + Off::RB_Shape;
+    // shape ptr written as 0, patched via global fixup below
+    WriteU32At(base + Off::RB_ShapeKey, rb.shapeKey);
+    WriteU32At(base + Off::RB_CollFilterInfo, rb.collisionFilterInfo);
+    WriteI8At(base + Off::RB_QualityType, rb.qualityType);
+    WriteFloatAt(base + Off::RB_AllowedPenDepth, rb.allowedPenetrationDepth);
 
-    // Broadphase handle, collision filter info, etc.
-    WriteU32(0); // shapeKey
-    WriteU32(0); // broadphase handle fields
-    WriteU32(0); // more broadphase
-    WriteU32(rb.collisionFilterInfo);
-    WriteU32(0); // padding
-    Pad(16);
+    // Name pointer at +0x74 — patched via local fixup below
+    uint32_t namePtrOff = base + Off::RB_Name;
 
-    // Material
-    WriteU8(static_cast<uint8_t>(rb.material.responseType));
-    WriteU8(0); WriteU16(0); // padding
-    WriteFloat(rb.material.friction);
-    WriteFloat(rb.material.restitution);
-    WriteFloat(rb.material.rollingFrictionMultiplier);
-    Pad(16);
+    // hkpMaterial (at +0x8C, 12 bytes)
+    WriteI8At(base + Off::RB_ResponseType, rb.material.responseType);
+    WriteFloatAt(base + Off::RB_Friction, rb.material.friction);
+    WriteFloatAt(base + Off::RB_Restitution, rb.material.restitution);
 
-    // Some entity fields
-    WriteU32(0); // damageMultiplier bits
-    WriteU32(0); // storage index, etc.
-    WriteU16(rb.contactPointCallbackDelay);
-    WriteU16(0); // padding
-    Pad(16);
+    // hkpEntity fields
+    WriteFloatAt(base + Off::RB_DamageMultiplier, rb.damageMultiplier);
+    WriteU16At(base + Off::RB_ContactCBDelay, rb.contactPointCallbackDelay);
+    WriteI8At(base + Off::RB_AutoRemoveLevel, rb.autoRemoveLevel);
+    WriteU8At(base + Off::RB_NumShapeKeysCPP, rb.numShapeKeysInContactPointProperties);
+    WriteU8At(base + Off::RB_RespModFlags, rb.responseModifierFlags);
+    WriteU32At(base + Off::RB_UID, rb.uid);
 
-    // Motion sub-object
-    // hkpMotion header
-    WriteU32(0); // vtable
-    WriteU16(0); WriteU16(0); // memSizeAndFlags + refCount
-    WriteU8(static_cast<uint8_t>(rb.motion.type));
-    WriteU8(rb.motion.deactivationIntegrateCounter);
-    WriteU16(rb.motion.deactivationNumInactiveFrames[0]);
-    Pad(16);
+    // hkpMotion (embedded at +0xE0, size 0x120)
+    WriteU8At(base + Off::RB_MotionType, static_cast<uint8_t>(rb.motion.type));
+    WriteU8At(base + Off::RB_DeactIntCounter, rb.motion.deactivationIntegrateCounter);
+    WriteU16At(base + Off::RB_DeactNumFrames, rb.motion.deactivationNumInactiveFrames[0]);
+    WriteU16At(base + Off::RB_DeactNumFrames + 2, rb.motion.deactivationNumInactiveFrames[1]);
 
-    // MotionState: transform
-    WriteTransform(rb.motion.motionState.transform);
+    // hkMotionState transform (hkTransform at +0xF0, 64 bytes)
+    WriteTransformAt(base + Off::RB_Transform, rb.motion.motionState.transform);
 
-    // SweptTransform
-    WriteVector4(rb.motion.motionState.centerOfMass0);
-    WriteVector4(rb.motion.motionState.centerOfMass1);
-    WriteQuaternion(rb.motion.motionState.rotation0);
-    WriteQuaternion(rb.motion.motionState.rotation1);
-    WriteVector4(rb.motion.motionState.centerOfMassLocal);
+    // hkSweptTransform (at +0x130)
+    WriteVector4At(base + Off::RB_CenterOfMass0, rb.motion.motionState.centerOfMass0);
+    WriteVector4At(base + Off::RB_CenterOfMass1, rb.motion.motionState.centerOfMass1);
+    WriteQuaternionAt(base + Off::RB_Rotation0, rb.motion.motionState.rotation0);
+    WriteQuaternionAt(base + Off::RB_Rotation1, rb.motion.motionState.rotation1);
+    WriteVector4At(base + Off::RB_COMLocal, rb.motion.motionState.centerOfMassLocal);
 
-    // deltaAngle
-    WriteVector4(rb.motion.motionState.deltaAngle);
+    // Remaining hkMotionState fields
+    WriteVector4At(base + Off::RB_DeltaAngle, rb.motion.motionState.deltaAngle);
+    WriteFloatAt(base + Off::RB_ObjectRadius, rb.motion.motionState.objectRadius);
+    WriteFloatAt(base + Off::RB_LinearDamping, rb.motion.motionState.linearDamping);
+    WriteFloatAt(base + Off::RB_AngularDamping, rb.motion.motionState.angularDamping);
 
-    // objectRadius + damping
-    WriteFloat(rb.motion.motionState.objectRadius);
-    WriteFloat(rb.motion.motionState.linearDamping);
-    WriteFloat(rb.motion.motionState.angularDamping);
-    WriteFloat(rb.motion.motionState.maxLinearVelocity);
-    WriteFloat(rb.motion.motionState.maxAngularVelocity);
-    WriteU8(rb.motion.motionState.deactivationClass);
-    Pad(16);
+    // maxLinearVelocity and maxAngularVelocity are stored as u8 (hkUFloat8 quantized)
+    WriteU8At(base + Off::RB_MaxLinVel,
+              static_cast<uint8_t>(rb.motion.motionState.maxLinearVelocity));
+    WriteU8At(base + Off::RB_MaxAngVel,
+              static_cast<uint8_t>(rb.motion.motionState.maxAngularVelocity));
+    WriteU8At(base + Off::RB_DeactClass, rb.motion.motionState.deactivationClass);
 
-    // inertiaAndMassInv, linearVelocity, angularVelocity
-    WriteVector4(rb.motion.inertiaAndMassInv);
-    WriteVector4(rb.motion.linearVelocity);
-    WriteVector4(rb.motion.angularVelocity);
+    // hkpMotion physics fields
+    WriteVector4At(base + Off::RB_InertiaInvMass, rb.motion.inertiaAndMassInv);
+    WriteVector4At(base + Off::RB_LinearVelocity, rb.motion.linearVelocity);
+    WriteVector4At(base + Off::RB_AngularVelocity, rb.motion.angularVelocity);
+    WriteVector4At(base + Off::RB_DeactRefPos, rb.motion.deactivationRefPosition[0]);
+    WriteVector4At(base + Off::RB_DeactRefPos + 16, rb.motion.deactivationRefPosition[1]);
 
-    // deactivationRefPosition
-    WriteVector4(rb.motion.deactivationRefPosition[0]);
-    WriteVector4(rb.motion.deactivationRefPosition[1]);
-
-    // gravityFactor + padding
-    WriteFloat(rb.motion.gravityFactor);
-    Pad(16);
-
-    // Name string (if present)
-    uint32_t namePtrOff = 0;
-    if (!rb.name.empty()) {
-        namePtrOff = Pos();
-        WriteU32(0); // name ptr
-    }
-    Pad(16);
+    // gravityFactor stored as hkHalf (int16, value = raw / 16384.0)
+    int16_t gravHalf = static_cast<int16_t>(rb.motion.gravityFactor * 16384.0f);
+    WriteU16At(base + Off::RB_GravityFactor, static_cast<uint16_t>(gravHalf));
 
     // Write shape and set up global fixup
     if (rb.shape.type != ShapeType::Unknown) {
@@ -625,8 +659,8 @@ uint32_t HkxWriter::WriteRigidBody(const RigidBodyInfo& rb) {
         AddGlobalFixup(shapePtrOff, 2, shapeOff);
     }
 
-    // Write name string data
-    if (!rb.name.empty() && namePtrOff != 0) {
+    // Write name string data (appended after the rigid body object)
+    if (!rb.name.empty()) {
         uint32_t nameDataOff = Pos();
         for (char c : rb.name) WriteU8(static_cast<uint8_t>(c));
         WriteU8(0);
@@ -634,7 +668,7 @@ uint32_t HkxWriter::WriteRigidBody(const RigidBodyInfo& rb) {
         Pad(4);
     }
 
-    return offset;
+    return base;
 }
 
 uint32_t HkxWriter::WritePhysicsSystem(const PhysicsSystemInfo& sys) {
@@ -784,6 +818,7 @@ bool HkxWriter::Write(const std::filesystem::path& outputPath,
                        const ParseResult& result,
                        const WriteOptions& options) {
     Reset();
+    m_FileVersion = options.fileVersion;
 
     // Write physics data hierarchy
     if (!result.physicsData.empty()) {

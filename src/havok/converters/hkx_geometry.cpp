@@ -54,10 +54,38 @@ static void addVertex(ExtractedMesh& m, const Transform& t, float x, float y, fl
 // Collision shape extraction (recursive)
 // ---------------------------------------------------------------------------
 
+// Tessellate a box primitive into 12 triangles (6 faces x 2 tris)
+static void tessellateBox(ExtractedMesh& m, const Transform& xform, const Vector4& halfExtents) {
+    float hx = halfExtents.x, hy = halfExtents.y, hz = halfExtents.z;
+    // 8 corners
+    float corners[8][3] = {
+        {-hx, -hy, -hz}, { hx, -hy, -hz}, { hx,  hy, -hz}, {-hx,  hy, -hz},
+        {-hx, -hy,  hz}, { hx, -hy,  hz}, { hx,  hy,  hz}, {-hx,  hy,  hz},
+    };
+    for (auto& c : corners) addVertex(m, xform, c[0], c[1], c[2]);
+    // 6 faces, 2 triangles each (CCW winding)
+    uint32_t faces[12][3] = {
+        {0,2,1},{0,3,2}, {4,5,6},{4,6,7}, // -Z, +Z
+        {0,1,5},{0,5,4}, {2,3,7},{2,7,6}, // -Y, +Y
+        {0,4,7},{0,7,3}, {1,2,6},{1,6,5}, // -X, +X
+    };
+    for (auto& f : faces) {
+        m.indices.push_back(f[0]); m.indices.push_back(f[1]); m.indices.push_back(f[2]);
+    }
+}
+
 static void extractShape(std::vector<ExtractedMesh>& out, int& shapeCount,
                           const ShapeInfo& shape, const Transform& parentXform) {
     if (shape.type == ShapeType::Unknown) return;
     shapeCount++;
+
+    // Box primitive: tessellate into triangles
+    if (shape.type == ShapeType::Box) {
+        ExtractedMesh m;
+        m.shapeType = ShapeType::Box;
+        tessellateBox(m, parentXform, shape.halfExtents);
+        if (!m.indices.empty()) out.push_back(std::move(m));
+    }
 
     // Mesh shapes: planeEquations as vertices + triangles
     if (!shape.triangles.empty() && !shape.planeEquations.empty()) {
