@@ -27,12 +27,10 @@ static void append_zeros(std::vector<uint8_t>& b, size_t n) {
 // Build a minimal valid 420-byte PSB data block followed by a texture array.
 // All unspecified fields are zero. The texture array holds one entry with the
 // given path at the fixed offset 420 (right after the data block).
-//
-// Caller can override individual bytes if needed.
 static std::vector<uint8_t> make_minimal_psb(
     uint32_t particle_id = 1,
-    float    birth_rate  = 1.0f,
-    float    emit_speed  = 2.0f,
+    float    life_var    = 1.0f,
+    float    initial_scale = 2.0f,
     const std::string& tex_path = "forkp/textures/dds/test.dds")
 {
     constexpr uint32_t DATA_SIZE    = 420;
@@ -51,60 +49,66 @@ static std::vector<uint8_t> make_minimal_psb(
     // COLOR BLOCK (0x10–0x4F, 4 × RGBA, all zero)
     append_zeros(b, 64);
 
-    // TIMING BLOCK (0x50–0x6B)
-    append_f32(b, 0.0f);         // birth_delay
-    append_f32(b, 0.5f);         // life_min
-    append_f32(b, 1.0f);         // life_max
-    append_f32(b, birth_rate);   // birth_rate
-    append_f32(b, 0.0f);         // death_delay
-    append_f32(b, 0.0f);         // emit_period
-    append_u32(b, 0x00000001);   // flags
+    // PARTICLE PROPERTIES (0x50–0x6B)
+    append_f32(b, 0.0f);         // color_ratio_1    0x50: *PCOLORRATIO
+    append_f32(b, 0.5f);         // color_ratio_2    0x54: *PCOLORRATIO2
+    append_f32(b, 1.0f);         // life_min         0x58: *PLIFEMIN
+    append_f32(b, life_var);     // life_var          0x5C: *PLIFEVAR
+    append_f32(b, 0.0f);         // vel_min           0x60: *PVELMIN
+    append_f32(b, 0.0f);         // vel_var            0x64: *PVELVAR
+    append_u32(b, 0x00000001);   // flags             0x68: *PFLAGS
 
-    // VELOCITY BLOCK (0x6C–0x87)
-    append_f32(b, emit_speed);   // emit_speed
-    append_zeros(b, 24);         // speed_x/y/z, gravity, spread_angle, rotation_speed
+    // SCALE PROPERTIES (0x6C–0x78)
+    append_f32(b, initial_scale);// initial_scale     0x6C: *PISCALE
+    append_zeros(b, 12);         // trans_scale, final_scale, scale_ratio
 
-    // SIZE BLOCK (0x88–0x97)
-    append_f32(b, 1.0f);         // size_start
-    append_f32(b, 2.0f);         // size_end
-    append_f32(b, 1.0f);         // size_mult (not read at runtime)
-    append_f32(b, 1.0f);         // size_alpha (not read at runtime)
+    // ROTATION + DRAG (0x7C–0x84)
+    append_zeros(b, 12);         // rot_min, rot_var, drag
 
-    // ROTATION BLOCK (0x98–0xA7)
-    append_f32(b, 0.0f);         // initial_rotation
-    append_zeros(b, 12);         // pad_rotation 1/2/3 (always zero)
+    // SCALE VECTOR (0x88–0x97)
+    append_f32(b, 1.0f);         // scale[0]          0x88: *SCALE
+    append_f32(b, 2.0f);         // scale[1]          0x8C
+    append_f32(b, 1.0f);         // scale[2]          0x90 (not read by runtime)
+    append_f32(b, 1.0f);         // scale[3]          0x94 (not read by runtime)
 
-    // COLOR2 BLOCK (0xA8–0xB7)
+    // ROTATION VECTOR (0x98–0xA7)
+    append_f32(b, 0.0f);         // rotation[0]       0x98: *ROTATION
+    append_zeros(b, 12);         // rotation[1-3] (always zero)
+
+    // TINT COLOR (0xA8–0xB7)
     append_zeros(b, 16);
 
-    // ACCELERATION BLOCK (0xB8–0xCF)
-    append_zeros(b, 8);          // accel_x/y
-    append_f32(b, 0.0f);         // accel_z
-    append_f32(b, 0.0f);         // pad_accel (0xC4)
-    append_f32(b, 100.0f);       // format_const_100 (0xC8, always 100)
-    append_f32(b, 500.0f);       // max_draw_dist
+    // SCALE VARIATION (0xB8–0xC3)
+    append_zeros(b, 12);         // iscale_var, tscale_var, fscale_var
 
-    // SPIN BLOCK (0xD0–0xEB)
-    append_zeros(b, 24);         // spin_start/min/max/var/damp/speed
-    append_u32(b, 0);            // spin_flags
+    // EMITTER PROPERTIES (0xC4–0xEB)
+    append_f32(b, 0.0f);         // sim_life          0xC4: *ESIMLIFE
+    append_f32(b, 100.0f);       // emitter_life      0xC8: *ELIFE (default 100)
+    append_f32(b, 500.0f);       // emit_rate         0xCC: *ERATE
+    append_f32(b, 0.0f);         // gravity           0xD0: *EGRAVITY
+    append_zeros(b, 12);         // plane_w/h/d       0xD4-0xDC
+    append_f32(b, 0.0f);         // cone_radius       0xE0: *ECONERAD
+    append_f32(b, 0.0f);         // max_particles     0xE4: *EMAXPARTICLE
+    append_u32(b, 0);            // volume_type       0xE8: *EVOLUME
 
     // BOUNDS BLOCK (0xEC–0x107)
-    append_zeros(b, 28);         // bounds_min/max + pad
+    append_zeros(b, 24);         // bounds_min/max
+    append_f32(b, 0.0f);         // num_burst         0x104: *NBURST
 
     // METADATA BLOCK (0x108–0x1A3)
-    append_f32(b, 0.0f);         // emit_rate_final    0x108
-    append_u32(b, 1);            // texture_blend_mode 0x10C (add)
-    append_f32(b, 1.0f);         // playback_scale     0x110
-    append_u32(b, 0);            // loop_count         0x114
+    append_f32(b, 0.0f);         // anim_speed        0x108: *ANMSPEED
+    append_u32(b, 1);            // blend_mode        0x10C: *EBLENDMODE (add)
+    append_f32(b, 1.0f);         // time_delta_mult   0x110: *TDELTAMULT
+    append_u32(b, 0);            // num_point_forces  0x114: *NUMPOINTFORCES
     append_u32(b, static_cast<uint32_t>(DATA_SIZE + 64)); // file_total_size 0x118
     append_u32(b, 412);          // emitter_params_size 0x11C
-    append_u32(b, DATA_SIZE);    // data_block_size    0x120
-    append_u32(b, NUM_TEXTURES); // num_textures       0x124
-    append_u32(b, 0xDEADBEEF);   // runtime_ptr_A      0x128 (junk)
+    append_u32(b, DATA_SIZE);    // data_block_size   0x120
+    append_u32(b, NUM_TEXTURES); // num_assets        0x124: *NUMASSETS
+    append_u32(b, 0xDEADBEEF);   // runtime_ptr_A     0x128 (junk)
     append_u32(b, TEX_OFFSET);   // texture_data_offset 0x12C
 
     // 0x130-0x13F
-    append_u32(b, 0);            // flag_extra_130
+    append_u32(b, 0);            // num_emission_assets 0x130
     append_u32(b, static_cast<uint32_t>(DATA_SIZE + 64)); // extra_size_134
     append_u32(b, 0);            // anim_data_offset (static)
     append_u32(b, 832);          // texture_base_offset (always 832)
@@ -115,10 +119,10 @@ static std::vector<uint8_t> make_minimal_psb(
     // 0x184: file_total_size duplicate
     append_u32(b, static_cast<uint32_t>(DATA_SIZE + 64));
 
-    // 0x188-0x190: scale fields
-    append_f32(b, 1.0f);         // scale_188
-    append_f32(b, 1.0f);         // scale_18c
-    append_f32(b, 10.0f);        // scale_190
+    // 0x188-0x190: path properties
+    append_f32(b, 1.0f);         // path_dist_min     0x188
+    append_f32(b, 1.0f);         // path_dist_var     0x18C
+    append_f32(b, 10.0f);        // path_speed        0x190
 
     // 0x194-0x1A3 (last 16 bytes of the 420-byte data block)
     append_u32(b, 0);            // emitter_name_present  (0x194)
@@ -168,32 +172,32 @@ TEST(PsbParse, ParsesHeader) {
     EXPECT_EQ(psb.section_offset, 112u);
 }
 
-// ── timing fields ───────────────────────────────────────────────────────────
+// ── particle properties ────────────────────────────────────────────────────
 
-TEST(PsbParse, ParsesTimingBlock) {
-    auto b = make_minimal_psb(1, /*birth_rate=*/3.5f);
+TEST(PsbParse, ParsesParticleProperties) {
+    auto b = make_minimal_psb(1, /*life_var=*/3.5f);
     auto psb = lu::assets::psb_parse(b);
 
-    EXPECT_FLOAT_EQ(psb.life_min,   0.5f);
-    EXPECT_FLOAT_EQ(psb.life_max,   1.0f);
-    EXPECT_FLOAT_EQ(psb.birth_rate, 3.5f);
+    EXPECT_FLOAT_EQ(psb.color_ratio_2, 0.5f);
+    EXPECT_FLOAT_EQ(psb.life_min,      1.0f);
+    EXPECT_FLOAT_EQ(psb.life_var,      3.5f);
     EXPECT_EQ      (psb.flags, 0x00000001u);
 }
 
-// ── velocity fields ─────────────────────────────────────────────────────────
+// ── scale properties ───────────────────────────────────────────────────────
 
-TEST(PsbParse, ParsesEmitSpeed) {
-    auto b = make_minimal_psb(1, 1.0f, /*emit_speed=*/7.25f);
+TEST(PsbParse, ParsesInitialScale) {
+    auto b = make_minimal_psb(1, 1.0f, /*initial_scale=*/7.25f);
     auto psb = lu::assets::psb_parse(b);
-    EXPECT_FLOAT_EQ(psb.emit_speed, 7.25f);
+    EXPECT_FLOAT_EQ(psb.initial_scale, 7.25f);
 }
 
-// ── acceleration block ──────────────────────────────────────────────────────
+// ── emitter properties ─────────────────────────────────────────────────────
 
-TEST(PsbParse, ParsesMaxDrawDist) {
+TEST(PsbParse, ParsesEmitRate) {
     auto b = make_minimal_psb();
     auto psb = lu::assets::psb_parse(b);
-    EXPECT_FLOAT_EQ(psb.max_draw_dist, 500.0f);
+    EXPECT_FLOAT_EQ(psb.emit_rate, 500.0f);
 }
 
 // ── metadata fields ─────────────────────────────────────────────────────────
@@ -202,13 +206,13 @@ TEST(PsbParse, ParsesMetadata) {
     auto b = make_minimal_psb();
     auto psb = lu::assets::psb_parse(b);
 
-    EXPECT_EQ(psb.texture_blend_mode,  1u);       // add
-    EXPECT_FLOAT_EQ(psb.playback_scale, 1.0f);
-    EXPECT_EQ(psb.loop_count,           0u);
-    EXPECT_EQ(psb.num_textures,         1u);
-    EXPECT_FLOAT_EQ(psb.scale_188,      1.0f);
-    EXPECT_FLOAT_EQ(psb.scale_18c,      1.0f);
-    EXPECT_FLOAT_EQ(psb.scale_190,     10.0f);
+    EXPECT_EQ(psb.blend_mode,           1u);       // add
+    EXPECT_FLOAT_EQ(psb.time_delta_mult, 1.0f);
+    EXPECT_EQ(psb.num_point_forces,      0u);
+    EXPECT_EQ(psb.num_assets,            1u);
+    EXPECT_FLOAT_EQ(psb.path_dist_min,   1.0f);
+    EXPECT_FLOAT_EQ(psb.path_dist_var,   1.0f);
+    EXPECT_FLOAT_EQ(psb.path_speed,      10.0f);
 }
 
 TEST(PsbParse, AnimDataOffsetZeroWhenStatic) {
@@ -277,34 +281,34 @@ TEST_F(PsbGolden, Header) {
     EXPECT_EQ(psb.section_offset, 112u);
 }
 
-TEST_F(PsbGolden, TimingBlock) {
-    EXPECT_FLOAT_EQ(psb.birth_rate,  0.4f);
-    EXPECT_EQ      (psb.flags,       0x00000001u);
+TEST_F(PsbGolden, ParticleProperties) {
+    EXPECT_FLOAT_EQ(psb.life_var,  0.4f);
+    EXPECT_EQ      (psb.flags,     0x00000001u);
 }
 
-TEST_F(PsbGolden, VelocityBlock) {
-    EXPECT_FLOAT_EQ(psb.emit_speed, 0.2f);
+TEST_F(PsbGolden, ScaleProperties) {
+    EXPECT_FLOAT_EQ(psb.initial_scale, 0.2f);
 }
 
 TEST_F(PsbGolden, RotationBlock) {
-    EXPECT_FLOAT_EQ(psb.initial_rotation, 0.0f);
+    EXPECT_FLOAT_EQ(psb.rotation[0], 0.0f);
 }
 
-TEST_F(PsbGolden, AccelerationBlock) {
-    EXPECT_FLOAT_EQ(psb.max_draw_dist, 40.0f);
+TEST_F(PsbGolden, EmitterProperties) {
+    EXPECT_FLOAT_EQ(psb.emit_rate, 40.0f);
 }
 
-TEST_F(PsbGolden, SpinBlock) {
-    EXPECT_EQ(psb.spin_flags, 0u);
+TEST_F(PsbGolden, VolumeType) {
+    EXPECT_EQ(psb.volume_type, 0u);
 }
 
 TEST_F(PsbGolden, Metadata) {
-    EXPECT_EQ      (psb.texture_blend_mode,  6u);    // alpha/blend
-    EXPECT_FLOAT_EQ(psb.playback_scale,      1.3f);
-    EXPECT_EQ      (psb.loop_count,          0u);
+    EXPECT_EQ      (psb.blend_mode,          6u);    // alpha/blend
+    EXPECT_FLOAT_EQ(psb.time_delta_mult,     1.3f);
+    EXPECT_EQ      (psb.num_point_forces,    0u);
     EXPECT_EQ      (psb.file_total_size,     2136u);
     EXPECT_EQ      (psb.emitter_params_size, 412u);
-    EXPECT_EQ      (psb.num_textures,        2u);
+    EXPECT_EQ      (psb.num_assets,          2u);
     EXPECT_EQ      (psb.texture_data_offset, 2008u);
 }
 
@@ -313,10 +317,10 @@ TEST_F(PsbGolden, AnimDataOffset) {
     EXPECT_EQ(psb.texture_base_offset, 832u);   // always 832
 }
 
-TEST_F(PsbGolden, ScaleFields) {
-    EXPECT_FLOAT_EQ(psb.scale_188, 1.0f);
-    EXPECT_FLOAT_EQ(psb.scale_18c, 1.0f);
-    EXPECT_FLOAT_EQ(psb.scale_190, 10.0f);
+TEST_F(PsbGolden, PathProperties) {
+    EXPECT_FLOAT_EQ(psb.path_dist_min, 1.0f);
+    EXPECT_FLOAT_EQ(psb.path_dist_var, 1.0f);
+    EXPECT_FLOAT_EQ(psb.path_speed,    10.0f);
 }
 
 TEST_F(PsbGolden, TexturePaths) {

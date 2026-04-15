@@ -20,8 +20,8 @@ std::string effect_write(const EffectFile& effect) {
         out << "DS: " << em.ds << "\n";
         out << "SE: " << em.se << "\n";
         if (em.mt != 0) out << "MT: " << em.mt << "\n";
-        if (em.dist != 0.0f) out << "DIST: " << static_cast<int>(em.dist) << "\n";
-        if (em.dmin != 0.0f) out << "DMIN: " << static_cast<int>(em.dmin) << "\n";
+        if (em.dist != 0.0f) out << "DIST: " << std::fixed << std::setprecision(6) << em.dist << "\n";
+        if (em.dmin != 0.0f) out << "DMIN: " << std::fixed << std::setprecision(6) << em.dmin << "\n";
         if (em.prio != 0) out << "PRIO: " << em.prio << "\n";
         if (em.loop != 0) out << "LOOP: " << em.loop << "\n";
     }

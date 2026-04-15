@@ -39,60 +39,62 @@ std::vector<uint8_t> psb_write(const PsbFile& psb,
     write_u32(out, psb.section_offset);     // 0x0C
 
     // ── COLOR BLOCK (0x10–0x4F) ────────────────────────────────────────────
-    write_color(out, psb.start_color);      // 0x10
-    write_color(out, psb.middle_color);     // 0x20
-    write_color(out, psb.end_color);        // 0x30
-    write_color(out, psb.birth_color);      // 0x40
+    write_color(out, psb.initial_color);    // 0x10: *PICOLOR
+    write_color(out, psb.trans_color_1);    // 0x20: *PTCOLOR1
+    write_color(out, psb.trans_color_2);    // 0x30: *PTCOLOR2
+    write_color(out, psb.final_color);      // 0x40: *PFCOLOR
 
-    // ── TIMING BLOCK (0x50–0x6B) ───────────────────────────────────────────
-    write_f32(out, psb.birth_delay);        // 0x50
-    write_f32(out, psb.life_min);           // 0x54
-    write_f32(out, psb.life_max);           // 0x58
-    write_f32(out, psb.birth_rate);         // 0x5C
-    write_f32(out, psb.death_delay);        // 0x60
-    write_f32(out, psb.emit_period);        // 0x64
-    write_u32(out, psb.flags);              // 0x68
+    // ── PARTICLE PROPERTIES (0x50–0x6B) ────────────────────────────────────
+    write_f32(out, psb.color_ratio_1);      // 0x50: *PCOLORRATIO
+    write_f32(out, psb.color_ratio_2);      // 0x54: *PCOLORRATIO2
+    write_f32(out, psb.life_min);           // 0x58: *PLIFEMIN
+    write_f32(out, psb.life_var);           // 0x5C: *PLIFEVAR
+    write_f32(out, psb.vel_min);            // 0x60: *PVELMIN
+    write_f32(out, psb.vel_var);            // 0x64: *PVELVAR
+    write_u32(out, psb.flags);              // 0x68: *PFLAGS
 
-    // ── VELOCITY BLOCK (0x6C–0x87) ─────────────────────────────────────────
-    write_f32(out, psb.emit_speed);         // 0x6C
-    write_f32(out, psb.speed_x);            // 0x70
-    write_f32(out, psb.speed_y);            // 0x74
-    write_f32(out, psb.speed_z);            // 0x78
-    write_f32(out, psb.gravity);            // 0x7C
-    write_f32(out, psb.spread_angle);       // 0x80
-    write_f32(out, psb.rotation_speed);     // 0x84
+    // ── SCALE PROPERTIES (0x6C–0x78) ──────────────────────────────────────
+    write_f32(out, psb.initial_scale);      // 0x6C: *PISCALE
+    write_f32(out, psb.trans_scale);        // 0x70: *PTSCALE
+    write_f32(out, psb.final_scale);        // 0x74: *PFSCALE
+    write_f32(out, psb.scale_ratio);        // 0x78: *PSCALERATIO
 
-    // ── SIZE BLOCK (0x88–0x97) ─────────────────────────────────────────────
-    write_f32(out, psb.size_start);         // 0x88
-    write_f32(out, psb.size_end);           // 0x8C
-    write_f32(out, psb.size_mult);          // 0x90
-    write_f32(out, psb.size_alpha);         // 0x94
+    // ── ROTATION + DRAG (0x7C–0x84) ───────────────────────────────────────
+    write_f32(out, psb.rot_min);            // 0x7C: *PROTMIN
+    write_f32(out, psb.rot_var);            // 0x80: *PROTVAR
+    write_f32(out, psb.drag);               // 0x84: *PDRAG
 
-    // ── ROTATION BLOCK (0x98–0xA7) ─────────────────────────────────────────
-    write_f32(out, psb.initial_rotation);   // 0x98
-    write_f32(out, psb.pad_rotation_1);     // 0x9C
-    write_f32(out, psb.pad_rotation_2);     // 0xA0
-    write_f32(out, psb.pad_rotation_3);     // 0xA4
+    // ── SCALE VECTOR (0x88–0x97) ──────────────────────────────────────────
+    write_f32(out, psb.scale[0]);           // 0x88: *SCALE
+    write_f32(out, psb.scale[1]);           // 0x8C
+    write_f32(out, psb.scale[2]);           // 0x90
+    write_f32(out, psb.scale[3]);           // 0x94
 
-    // ── COLOR2 BLOCK (0xA8–0xB7) ───────────────────────────────────────────
-    write_color(out, psb.color2);           // 0xA8
+    // ── ROTATION VECTOR (0x98–0xA7) ───────────────────────────────────────
+    write_f32(out, psb.rotation[0]);        // 0x98: *ROTATION
+    write_f32(out, psb.rotation[1]);        // 0x9C
+    write_f32(out, psb.rotation[2]);        // 0xA0
+    write_f32(out, psb.rotation[3]);        // 0xA4
 
-    // ── ACCELERATION BLOCK (0xB8–0xCF) ─────────────────────────────────────
-    write_f32(out, psb.accel_x);            // 0xB8
-    write_f32(out, psb.accel_y);            // 0xBC
-    write_f32(out, psb.accel_z);            // 0xC0
-    write_f32(out, psb.pad_accel);          // 0xC4
-    write_f32(out, psb.format_const);       // 0xC8
-    write_f32(out, psb.max_draw_dist);      // 0xCC
+    // ── TINT COLOR (0xA8–0xB7) ────────────────────────────────────────────
+    write_color(out, psb.tint);             // 0xA8: *TINT
 
-    // ── SPIN BLOCK (0xD0–0xEB) ─────────────────────────────────────────────
-    write_f32(out, psb.spin_start);         // 0xD0
-    write_f32(out, psb.spin_min);           // 0xD4
-    write_f32(out, psb.spin_max);           // 0xD8
-    write_f32(out, psb.spin_var);           // 0xDC
-    write_f32(out, psb.spin_damp);          // 0xE0
-    write_f32(out, psb.spin_speed);         // 0xE4
-    write_u32(out, psb.spin_flags);         // 0xE8
+    // ── SCALE VARIATION (0xB8–0xC3) ──────────────────────────────────────
+    write_f32(out, psb.iscale_var);         // 0xB8: *ISCALEMIN
+    write_f32(out, psb.tscale_var);         // 0xBC: *TSCALEMIN
+    write_f32(out, psb.fscale_var);         // 0xC0: *FSCALEMIN
+
+    // ── EMITTER PROPERTIES (0xC4–0xEB) ────────────────────────────────────
+    write_f32(out, psb.sim_life);           // 0xC4: *ESIMLIFE
+    write_f32(out, psb.emitter_life);       // 0xC8: *ELIFE
+    write_f32(out, psb.emit_rate);          // 0xCC: *ERATE
+    write_f32(out, psb.gravity);            // 0xD0: *EGRAVITY
+    write_f32(out, psb.plane_w);            // 0xD4: *EPLANEW
+    write_f32(out, psb.plane_h);            // 0xD8: *EPLANEH
+    write_f32(out, psb.plane_d);            // 0xDC: *EPLANED
+    write_f32(out, psb.cone_radius);        // 0xE0: *ECONERAD
+    write_f32(out, psb.max_particles);      // 0xE4: *EMAXPARTICLE
+    write_u32(out, psb.volume_type);        // 0xE8: *EVOLUME
 
     // ── BOUNDS BLOCK (0xEC–0x107) ──────────────────────────────────────────
     write_f32(out, psb.bounds_min[0]);      // 0xEC
@@ -101,28 +103,28 @@ std::vector<uint8_t> psb_write(const PsbFile& psb,
     write_f32(out, psb.bounds_max[0]);      // 0xF8
     write_f32(out, psb.bounds_max[1]);      // 0xFC
     write_f32(out, psb.bounds_max[2]);      // 0x100
-    write_f32(out, psb.pad_bounds);         // 0x104
+    write_f32(out, psb.num_burst);          // 0x104: *NBURST
 
     // ── METADATA BLOCK (0x108–0x13F) ───────────────────────────────────────
-    write_f32(out, psb.emit_rate_final);    // 0x108
-    write_u32(out, psb.texture_blend_mode); // 0x10C
-    write_f32(out, psb.playback_scale);     // 0x110
-    write_u32(out, psb.loop_count);         // 0x114
+    write_f32(out, psb.anim_speed);         // 0x108: *ANMSPEED
+    write_u32(out, psb.blend_mode);         // 0x10C: *EBLENDMODE
+    write_f32(out, psb.time_delta_mult);    // 0x110: *TDELTAMULT
+    write_u32(out, psb.num_point_forces);   // 0x114: *NUMPOINTFORCES
     write_u32(out, psb.file_total_size);    // 0x118
     write_u32(out, psb.emitter_params_size);// 0x11C
     write_u32(out, psb.data_block_size);    // 0x120
-    write_u32(out, psb.num_textures);       // 0x124
+    write_u32(out, psb.num_assets);         // 0x124: *NUMASSETS
     write_u32(out, psb.runtime_ptr_a);      // 0x128
     write_u32(out, psb.texture_data_offset);// 0x12C
-    write_u32(out, psb.flag_extra_130);     // 0x130
+    write_u32(out, psb.num_emission_assets);// 0x130: *NUMEMISSIONASSETS
     write_u32(out, psb.extra_size_134);     // 0x134
     write_u32(out, psb.anim_data_offset);   // 0x138
     write_u32(out, psb.texture_base_offset);// 0x13C
 
     // ── DESIGNER STATE BLOCK (0x140–0x183) ─────────────────────────────────
-    write_f32(out, psb.designer_offset_x);  // 0x140
-    write_f32(out, psb.designer_offset_y);  // 0x144
-    write_f32(out, psb.designer_offset_z);  // 0x148
+    write_f32(out, psb.emitter_offset_x);   // 0x140: *OFFSET X
+    write_f32(out, psb.emitter_offset_y);   // 0x144: *OFFSET Y
+    write_f32(out, psb.emitter_offset_z);   // 0x148: *OFFSET Z
     write_u32(out, psb.pad_14c);            // 0x14C
     out.insert(out.end(), psb.designer_state, psb.designer_state + 16); // 0x150
     out.insert(out.end(), psb.pad_160, psb.pad_160 + 16);              // 0x160
@@ -134,24 +136,20 @@ std::vector<uint8_t> psb_write(const PsbFile& psb,
 
     write_u32(out, psb.file_total_size_dup);// 0x184
 
-    // ── TAIL FIELDS (0x188–0x19F) ──────────────────────────────────────────
-    write_f32(out, psb.scale_188);          // 0x188
-    write_f32(out, psb.scale_18c);          // 0x18C
-    write_f32(out, psb.scale_190);          // 0x190
+    // ── PATH PROPERTIES (0x188–0x190) ──────────────────────────────────────
+    write_f32(out, psb.path_dist_min);      // 0x188
+    write_f32(out, psb.path_dist_var);      // 0x18C
+    write_f32(out, psb.path_speed);         // 0x190
 
     // 0x194: emitter_name_present, 0x198: emitter_name_offset, 0x19C: reserved
-    // These are in the original data after the main block — copy from original
-    // to preserve name offset and reserved field.
     if (original_data.size() >= 0x1A0) {
         out.insert(out.end(), original_data.begin() + 0x194,
                               original_data.begin() + 0x1A4);
     } else {
-        // No original data — write zeros
         for (int i = 0; i < 16; ++i) out.push_back(0);
     }
 
     // Everything after 0x1A4 (texture array, animation data, name string)
-    // is copied verbatim from the original file.
     if (original_data.size() > 0x1A4) {
         out.insert(out.end(), original_data.begin() + 0x1A4,
                               original_data.end());

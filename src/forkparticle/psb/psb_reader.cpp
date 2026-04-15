@@ -8,7 +8,7 @@ namespace lu::assets {
 // Texture entry in the texture array (at file offset = texture_data_offset).
 // Each entry is 64 bytes: u32 type + char[60] path.
 // Verified from FUN_010cdbf0 @ 010cdbf0 (legouniverse.exe):
-//   loop iterates num_textures entries with stride 0x40;
+//   loop iterates num_assets entries with stride 0x40;
 //   entry[0] == 1 identifies a texture path entry;
 //   entry[4..] is the null-terminated path string.
 static constexpr size_t TEXTURE_ENTRY_STRIDE = 64;
@@ -46,118 +46,114 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
     }
 
     // ── COLOR BLOCK (0x10–0x4F) ────────────────────────────────────────────
-    psb.start_color  = read_color(r);
-    psb.middle_color = read_color(r);
-    psb.end_color    = read_color(r);
-    psb.birth_color  = read_color(r);
+    psb.initial_color = read_color(r);   // 0x10: *PICOLOR
+    psb.trans_color_1 = read_color(r);   // 0x20: *PTCOLOR1
+    psb.trans_color_2 = read_color(r);   // 0x30: *PTCOLOR2
+    psb.final_color   = read_color(r);   // 0x40: *PFCOLOR
 
-    // ── TIMING BLOCK (0x50–0x6B) ───────────────────────────────────────────
-    psb.birth_delay  = r.read_f32();
-    psb.life_min     = r.read_f32();
-    psb.life_max     = r.read_f32();
-    psb.birth_rate   = r.read_f32();
-    psb.death_delay  = r.read_f32();
-    psb.emit_period  = r.read_f32();  // 0x64 → emitter+0x13C
-    psb.flags        = r.read_u32();
+    // ── PARTICLE PROPERTIES (0x50–0x6B) ────────────────────────────────────
+    psb.color_ratio_1 = r.read_f32();    // 0x50: *PCOLORRATIO
+    psb.color_ratio_2 = r.read_f32();    // 0x54: *PCOLORRATIO2
+    psb.life_min      = r.read_f32();    // 0x58: *PLIFEMIN
+    psb.life_var      = r.read_f32();    // 0x5C: *PLIFEVAR
+    psb.vel_min       = r.read_f32();    // 0x60: *PVELMIN
+    psb.vel_var       = r.read_f32();    // 0x64: *PVELVAR
+    psb.flags         = r.read_u32();    // 0x68: *PFLAGS
 
-    // ── VELOCITY BLOCK (0x6C–0x87) ─────────────────────────────────────────
-    psb.emit_speed    = r.read_f32();
-    psb.speed_x       = r.read_f32();
-    psb.speed_y       = r.read_f32();
-    psb.speed_z       = r.read_f32();
-    psb.gravity       = r.read_f32();
-    psb.spread_angle  = r.read_f32();
-    psb.rotation_speed = r.read_f32();  // 0x84 → emitter+0x174
+    // ── SCALE PROPERTIES (0x6C–0x78) ──────────────────────────────────────
+    psb.initial_scale = r.read_f32();    // 0x6C: *PISCALE
+    psb.trans_scale   = r.read_f32();    // 0x70: *PTSCALE
+    psb.final_scale   = r.read_f32();    // 0x74: *PFSCALE
+    psb.scale_ratio   = r.read_f32();    // 0x78: *PSCALERATIO
 
-    // ── SIZE BLOCK (0x88–0x97) ─────────────────────────────────────────────
-    // Engine multiplies size_start/size_end by an internal constant before use
-    // (FUN_01092450: *(float*)(emitter+0x150) = *(f*)(psb+0x88) * DOUBLE_015fcc48).
-    psb.size_start = r.read_f32();
-    psb.size_end   = r.read_f32();
-    psb.size_mult  = r.read_f32();   // 0x90: written by exporter, NOT used at runtime
-    psb.size_alpha = r.read_f32();   // 0x94: written by exporter, NOT used at runtime
+    // ── ROTATION + DRAG (0x7C–0x84) ───────────────────────────────────────
+    psb.rot_min = r.read_f32();          // 0x7C: *PROTMIN
+    psb.rot_var = r.read_f32();          // 0x80: *PROTVAR
+    psb.drag    = r.read_f32();          // 0x84: *PDRAG
 
-    // ── ROTATION BLOCK (0x98–0xA7) ─────────────────────────────────────────
-    // Engine converts initial_rotation from degrees to radians:
-    //   emitter+0x170 = (π/180) × psb+0x98  (FUN_01092450)
-    psb.initial_rotation = r.read_f32();
-    psb.pad_rotation_1 = r.read_f32();  // 0x9C: always 0 in client files
-    psb.pad_rotation_2 = r.read_f32();  // 0xA0: always 0
-    psb.pad_rotation_3 = r.read_f32();  // 0xA4: always 0
+    // ── SCALE VECTOR (0x88–0x97) ──────────────────────────────────────────
+    // *SCALE: 4 floats. First two multiplied by engine constant (FUN_01092450).
+    psb.scale[0] = r.read_f32();         // 0x88
+    psb.scale[1] = r.read_f32();         // 0x8C
+    psb.scale[2] = r.read_f32();         // 0x90: NOT used by runtime
+    psb.scale[3] = r.read_f32();         // 0x94: NOT used by runtime
 
-    // ── COLOR2 BLOCK (0xA8–0xB7) ───────────────────────────────────────────
-    psb.color2 = read_color(r);
+    // ── ROTATION VECTOR (0x98–0xA7) ───────────────────────────────────────
+    // *ROTATION: 4 floats. Only [0] used, converted deg→rad by engine.
+    psb.rotation[0] = r.read_f32();      // 0x98
+    psb.rotation[1] = r.read_f32();      // 0x9C: always 0 in client files
+    psb.rotation[2] = r.read_f32();      // 0xA0: always 0
+    psb.rotation[3] = r.read_f32();      // 0xA4: always 0
 
-    // ── ACCELERATION BLOCK (0xB8–0xCF) ─────────────────────────────────────
-    psb.accel_x       = r.read_f32();
-    psb.accel_y       = r.read_f32();
-    psb.accel_z       = r.read_f32();
-    psb.pad_accel     = r.read_f32();   // 0xC4: almost always 0
-    psb.format_const  = r.read_f32();   // 0xC8: always 100.0 (format version marker)
-    psb.max_draw_dist = r.read_f32();   // 0xCC: emitter+0xCC ← psb+0xCC
+    // ── TINT COLOR (0xA8–0xB7) ────────────────────────────────────────────
+    psb.tint = read_color(r);            // 0xA8: *TINT
 
-    // ── SPIN BLOCK (0xD0–0xEB) ─────────────────────────────────────────────
-    psb.spin_start = r.read_f32();
-    psb.spin_min   = r.read_f32();
-    psb.spin_max   = r.read_f32();
-    psb.spin_var   = r.read_f32();
-    psb.spin_damp  = r.read_f32();   // 0xE0: emitter+0x164; exact use unclear
-    psb.spin_speed = r.read_f32();
-    psb.spin_flags = r.read_u32();   // 0xE8: low byte → emitter+0x180
+    // ── SCALE VARIATION (0xB8–0xC3) ──────────────────────────────────────
+    psb.iscale_var = r.read_f32();       // 0xB8: *ISCALEMIN
+    psb.tscale_var = r.read_f32();       // 0xBC: *TSCALEMIN
+    psb.fscale_var = r.read_f32();       // 0xC0: *FSCALEMIN
+
+    // ── EMITTER PROPERTIES (0xC4–0xEB) ────────────────────────────────────
+    psb.sim_life      = r.read_f32();    // 0xC4: *ESIMLIFE (designer-only, not read by LU)
+    psb.emitter_life  = r.read_f32();    // 0xC8: *ELIFE (designer-only, not read by LU)
+    psb.emit_rate     = r.read_f32();    // 0xCC: *ERATE
+    psb.gravity       = r.read_f32();    // 0xD0: *EGRAVITY
+    psb.plane_w       = r.read_f32();    // 0xD4: *EPLANEW
+    psb.plane_h       = r.read_f32();    // 0xD8: *EPLANEH
+    psb.plane_d       = r.read_f32();    // 0xDC: *EPLANED
+    psb.cone_radius   = r.read_f32();    // 0xE0: *ECONERAD
+    psb.max_particles = r.read_f32();    // 0xE4: *EMAXPARTICLE
+    psb.volume_type   = r.read_u32();    // 0xE8: *EVOLUME
 
     // ── BOUNDS BLOCK (0xEC–0x107) ──────────────────────────────────────────
-    // Axis-aligned bounding box. Sentinel ≈ ±100000 disables per-axis culling.
-    // NOT accessed by FUN_01092450 or FUN_010cdbf0 — likely read by culling code.
-    psb.bounds_min[0] = r.read_f32();  // 0xEC: min_x
-    psb.bounds_min[1] = r.read_f32();  // 0xF0: min_y
-    psb.bounds_min[2] = r.read_f32();  // 0xF4: min_z
-    psb.bounds_max[0] = r.read_f32();  // 0xF8: max_x
-    psb.bounds_max[1] = r.read_f32();  // 0xFC: max_y
-    psb.bounds_max[2] = r.read_f32();  // 0x100: max_z
-    psb.pad_bounds = r.read_f32();  // 0x104: always 0 in client files
+    psb.bounds_min[0] = r.read_f32();    // 0xEC
+    psb.bounds_min[1] = r.read_f32();    // 0xF0
+    psb.bounds_min[2] = r.read_f32();    // 0xF4
+    psb.bounds_max[0] = r.read_f32();    // 0xF8
+    psb.bounds_max[1] = r.read_f32();    // 0xFC
+    psb.bounds_max[2] = r.read_f32();    // 0x100
+    psb.num_burst     = r.read_f32();    // 0x104: *NBURST
 
-    // ── METADATA BLOCK (0x108–0x19F) ───────────────────────────────────────
-    psb.emit_rate_final    = r.read_f32();   // 0x108 → emitter+0x17C
-    psb.texture_blend_mode = r.read_u32();   // 0x10C → FUN_01092380 (blend enum 0..6)
-    psb.playback_scale     = r.read_f32();   // 0x110 → emitter+0x194
-    psb.loop_count         = r.read_u32();   // 0x114 → emitter+0x198
-    psb.file_total_size    = r.read_u32();   // 0x118 → emitter+0x19C
-    psb.emitter_params_size = r.read_u32();  // 0x11C: almost always 412
-    psb.data_block_size = r.read_u32();       // 0x120: always mirrors data_size (420)
-    psb.num_textures       = r.read_u32();   // 0x124 → emitter+0x1A0
-    psb.runtime_ptr_a = r.read_u32();         // 0x128: heap pointer from Designer
-    psb.texture_data_offset = r.read_u32();  // 0x12C → emitter+0x1A8
+    // ── METADATA BLOCK (0x108–0x13F) ───────────────────────────────────────
+    psb.anim_speed         = r.read_f32();   // 0x108: *ANMSPEED
+    psb.blend_mode         = r.read_u32();   // 0x10C: *EBLENDMODE
+    psb.time_delta_mult    = r.read_f32();   // 0x110: *TDELTAMULT
+    psb.num_point_forces   = r.read_u32();   // 0x114: *NUMPOINTFORCES
+    psb.file_total_size    = r.read_u32();   // 0x118
+    psb.emitter_params_size = r.read_u32();  // 0x11C
+    psb.data_block_size    = r.read_u32();   // 0x120
+    psb.num_assets         = r.read_u32();   // 0x124: *NUMASSETS
+    psb.runtime_ptr_a      = r.read_u32();   // 0x128
+    psb.texture_data_offset = r.read_u32();  // 0x12C
 
-    psb.flag_extra_130      = r.read_u32();  // 0x130: 0 or 1; purpose unclear
-    psb.extra_size_134      = r.read_u32();  // 0x134: usually = file_total_size
-    psb.anim_data_offset    = r.read_u32();  // 0x138: file offset to anim data (0=static)
-    psb.texture_base_offset = r.read_u32();  // 0x13C: always 832; runtime-patched ptr
+    psb.num_emission_assets = r.read_u32();  // 0x130: *NUMEMISSIONASSETS
+    psb.extra_size_134      = r.read_u32();  // 0x134
+    psb.anim_data_offset    = r.read_u32();  // 0x138
+    psb.texture_base_offset = r.read_u32();  // 0x13C
 
     // 0x140-0x183: Designer state block
-    psb.designer_offset_x = r.read_f32();   // 0x140
-    psb.designer_offset_y = r.read_f32();   // 0x144
-    psb.designer_offset_z = r.read_f32();   // 0x148
+    psb.emitter_offset_x = r.read_f32();    // 0x140: *OFFSET X
+    psb.emitter_offset_y = r.read_f32();    // 0x144: *OFFSET Y
+    psb.emitter_offset_z = r.read_f32();    // 0x148: *OFFSET Z
     psb.pad_14c = r.read_u32();             // 0x14C: always 0
     std::memcpy(psb.designer_state, data.data() + r.pos(), 16); r.skip(16); // 0x150-0x15F
     std::memcpy(psb.pad_160, data.data() + r.pos(), 16); r.skip(16);       // 0x160-0x16F
-    psb.runtime_1ac = r.read_f32();         // 0x170 → emitter+0x1AC
-    psb.runtime_1b0 = r.read_f32();         // 0x174 → emitter+0x1B0
-    psb.runtime_1b4 = r.read_f32();         // 0x178 → emitter+0x1B4
-    psb.runtime_1b8 = r.read_f32();         // 0x17C → emitter+0x1B8
-    psb.pad_180 = r.read_u32();             // 0x180: always 0
+    psb.runtime_1ac = r.read_f32();         // 0x170
+    psb.runtime_1b0 = r.read_f32();         // 0x174
+    psb.runtime_1b4 = r.read_f32();         // 0x178
+    psb.runtime_1b8 = r.read_f32();         // 0x17C
+    psb.pad_180 = r.read_u32();             // 0x180
 
-    psb.file_total_size_dup = r.read_u32(); // 0x184: always equals file_total_size
+    psb.file_total_size_dup = r.read_u32(); // 0x184
 
-    psb.scale_188 = r.read_f32();   // 0x188 → emitter+0x1C0
-    psb.scale_18c = r.read_f32();   // 0x18C → emitter+0x1C4
-    psb.scale_190 = r.read_f32();   // 0x190 → emitter+0x1BC
+    psb.path_dist_min = r.read_f32();       // 0x188
+    psb.path_dist_var = r.read_f32();       // 0x18C
+    psb.path_speed    = r.read_f32();       // 0x190
 
     // Extract texture paths from the texture array.
-    // The game engine uses texture_data_offset (patched to a pointer at runtime)
-    // with num_textures entries × 64 bytes (FUN_010cdbf0 @ 010cdbf0).
-    if (psb.num_textures > 0 && psb.texture_data_offset < data.size()) {
+    if (psb.num_assets > 0 && psb.texture_data_offset < data.size()) {
         size_t entry_base = psb.texture_data_offset;
-        for (uint32_t i = 0; i < psb.num_textures; ++i) {
+        for (uint32_t i = 0; i < psb.num_assets; ++i) {
             size_t entry = entry_base + i * TEXTURE_ENTRY_STRIDE;
             if (entry + TEXTURE_ENTRY_STRIDE > data.size()) break;
 
@@ -195,8 +191,7 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
             at.frame_offsets.push_back(off);
         }
 
-        // Parse keyframe data. Each frame block has a 5-u32 header at the offset,
-        // then the emitter parameters start at offset+20 (same layout as PSB+0x10).
+        // Parse keyframe data
         auto readColor = [&data](size_t off) -> PsbColor {
             PsbColor c;
             if (off + 16 <= data.size()) {
@@ -220,7 +215,6 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
 
         for (uint32_t i = 0; i < at.frame_count; ++i) {
             if (i >= at.frame_offsets.size() || at.frame_offsets[i] == 0) {
-                // Offset 0 = loop back to frame 0; skip
                 if (!at.keyframes.empty())
                     at.keyframes.push_back(at.keyframes[0]);
                 else
@@ -232,43 +226,40 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
             size_t p = base + at.frame_offsets[i] + 20;
             PsbFile::AnimKeyframe kf;
 
-            kf.start_color  = readColor(p);       p += 16; // +0x10
-            kf.middle_color = readColor(p);        p += 16; // +0x20
-            kf.end_color    = readColor(p);        p += 16; // +0x30
-            kf.birth_color  = readColor(p);        p += 16; // +0x40
-            kf.birth_delay  = readF32(p);          p += 4;  // +0x50
-            kf.life_min     = readF32(p);          p += 4;
-            kf.life_max     = readF32(p);          p += 4;
-            kf.birth_rate   = readF32(p);          p += 4;
-            kf.death_delay  = readF32(p);          p += 4;
-            kf.emit_period  = readF32(p);          p += 4;
-            kf.flags        = readU32(p);          p += 4;  // +0x68
-            kf.emit_speed   = readF32(p);          p += 4;  // +0x6C
-            kf.speed_x      = readF32(p);          p += 4;
-            kf.speed_y      = readF32(p);          p += 4;
-            kf.speed_z      = readF32(p);          p += 4;
-            kf.gravity      = readF32(p);          p += 4;
-            kf.spread_angle = readF32(p);          p += 4;
-            kf.rotation_speed = readF32(p);        p += 4;  // +0x84
-            kf.size_start   = readF32(p);          p += 4;  // +0x88
-            kf.size_end     = readF32(p);          p += 4;
-            kf.size_mult    = readF32(p);          p += 4;
-            kf.size_alpha   = readF32(p);          p += 4;
-            kf.initial_rotation = readF32(p);      p += 4;  // +0x98
-            kf.pad_rotation[0] = readF32(p);       p += 4;
-            kf.pad_rotation[1] = readF32(p);       p += 4;
-            kf.pad_rotation[2] = readF32(p);       p += 4;  // +0xA4
-            kf.color2       = readColor(p);                  // +0xA8
+            kf.initial_color = readColor(p);       p += 16; // 0x10
+            kf.trans_color_1 = readColor(p);       p += 16; // 0x20
+            kf.trans_color_2 = readColor(p);       p += 16; // 0x30
+            kf.final_color   = readColor(p);       p += 16; // 0x40
+            kf.color_ratio_1 = readF32(p);         p += 4;  // 0x50
+            kf.color_ratio_2 = readF32(p);         p += 4;  // 0x54
+            kf.life_min      = readF32(p);         p += 4;  // 0x58
+            kf.life_var      = readF32(p);         p += 4;  // 0x5C
+            kf.vel_min       = readF32(p);         p += 4;  // 0x60
+            kf.vel_var       = readF32(p);         p += 4;  // 0x64
+            kf.flags         = readU32(p);         p += 4;  // 0x68
+            kf.initial_scale = readF32(p);         p += 4;  // 0x6C
+            kf.trans_scale   = readF32(p);         p += 4;  // 0x70
+            kf.final_scale   = readF32(p);         p += 4;  // 0x74
+            kf.scale_ratio   = readF32(p);         p += 4;  // 0x78
+            kf.rot_min       = readF32(p);         p += 4;  // 0x7C
+            kf.rot_var       = readF32(p);         p += 4;  // 0x80
+            kf.drag          = readF32(p);         p += 4;  // 0x84
+            kf.scale_x       = readF32(p);         p += 4;  // 0x88
+            kf.scale_y       = readF32(p);         p += 4;  // 0x8C
+            kf.scale_z       = readF32(p);         p += 4;  // 0x90
+            kf.scale_w       = readF32(p);         p += 4;  // 0x94
+            kf.rotation_x    = readF32(p);         p += 4;  // 0x98
+            kf.rotation_pad[0] = readF32(p);       p += 4;
+            kf.rotation_pad[1] = readF32(p);       p += 4;
+            kf.rotation_pad[2] = readF32(p);       p += 4;  // 0xA4
+            kf.tint          = readColor(p);                 // 0xA8
 
             at.keyframes.push_back(std::move(kf));
         }
     }
 
     // Extract per-texture UV rects from the texture array entries.
-    // Each 64-byte texture entry has UV rect at +0x2C: f32 u_min, v_min, u_max, v_max.
-    // This works for both static and animated files.
-    if (psb.num_textures > 0 && psb.texture_data_offset > 0) {
-        // Allow slight overshoot beyond 1.0 (texture bleeding/padding)
+    if (psb.num_assets > 0 && psb.texture_data_offset > 0) {
         auto is_valid_uv = [](float u0, float v0, float u1, float v1) {
             return u0 >= -0.01f && u0 < 1.01f && v0 >= -0.01f && v0 < 1.01f &&
                    u1 > 0 && u1 <= 1.01f && v1 > 0 && v1 <= 1.01f &&
@@ -276,7 +267,7 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
                    (u1 - u0) > 0.01f && (v1 - v0) > 0.01f;
         };
 
-        for (uint32_t i = 0; i < psb.num_textures; ++i) {
+        for (uint32_t i = 0; i < psb.num_assets; ++i) {
             size_t entry_off = psb.texture_data_offset + i * 64 + 0x2C;
             if (entry_off + 16 > data.size()) break;
 
@@ -295,9 +286,6 @@ PsbFile psb_parse(std::span<const uint8_t> data) {
     }
 
     // Extract emitter name from PSB+0x194/0x198.
-    // 0x194 = emitter_name_present flag (non-zero = has name).
-    // 0x198 = emitter_name_offset into file (patched to pointer at runtime).
-    // Verified from FUN_010cdbf0 @ 010cdbf0: sets emitter+0x1EC when flag ≠ 0.
     if (data.size() > 0x198) {
         uint32_t name_flag, name_offset;
         std::memcpy(&name_flag,   data.data() + 0x194, 4);
