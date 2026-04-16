@@ -46,14 +46,50 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
         }
 
         // Color map resolution
+        // Ghidra RE (RAWReadColorandLightMaps @ 0102e3e0):
+        //   version < 32: colorMapResolution = width - 1
+        //   version >= 32: colorMapResolution = read_u32()
         if (terrain.version >= 32) {
             chunk.color_map_res = r.read_u32();
         } else {
-            chunk.color_map_res = chunk.width;
+            chunk.color_map_res = (chunk.width > 0) ? chunk.width - 1 : 0;
         }
 
-        // Color map: RGBA per texel
-        if (chunk.color_map_res > 0 && chunk.color_map_res <= 4096) {
+        // Color map: 4 bytes per texel
+        // version < 32: stored as BGRA in file, client swizzles to RGBA
+        //   (Ghidra: R=byte[2], G=byte[1], B=byte[0], A=byte[3])
+        //   Also reads width*width entries but only stores (width-1)^2
+        // version >= 32: stored as RGBA, direct read of colorMapRes^2 entries
+        if (terrain.version < 32) {
+            // Read width*width entries (some are discarded per original client logic)
+            size_t read_count = static_cast<size_t>(chunk.width) * chunk.width;
+            size_t store_res = chunk.color_map_res; // width - 1
+            if (store_res > 0 && store_res <= 4096) {
+                chunk.color_map.resize(store_res * store_res * 4);
+                size_t store_idx = 0;
+                for (uint32_t y = 0; y < chunk.width; ++y) {
+                    for (uint32_t x = 0; x < chunk.width; ++x) {
+                        if (r.remaining() < 4) break;
+                        uint8_t b0 = r.read_u8(); // B
+                        uint8_t b1 = r.read_u8(); // G
+                        uint8_t b2 = r.read_u8(); // R
+                        uint8_t b3 = r.read_u8(); // A
+                        // Only store if within the (width-1)x(width-1) grid
+                        if (y < store_res && x < store_res) {
+                            chunk.color_map[store_idx + 0] = b2; // R
+                            chunk.color_map[store_idx + 1] = b1; // G
+                            chunk.color_map[store_idx + 2] = b0; // B
+                            chunk.color_map[store_idx + 3] = b3; // A
+                            store_idx += 4;
+                        }
+                    }
+                }
+            } else {
+                // Skip the data
+                size_t skip = read_count * 4;
+                if (r.remaining() >= skip) r.read_bytes(skip);
+            }
+        } else if (chunk.color_map_res > 0 && chunk.color_map_res <= 4096) {
             size_t cm_bytes = static_cast<size_t>(chunk.color_map_res) * chunk.color_map_res * 4;
             if (r.remaining() >= cm_bytes) {
                 auto cm = r.read_bytes(cm_bytes);
