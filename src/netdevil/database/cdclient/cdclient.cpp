@@ -232,12 +232,13 @@ std::vector<CdComponentEntry> CdClient::get_components(int32_t lot) const {
 std::optional<CdRenderComponent> CdClient::get_render_component(int32_t id) const {
     if (!db_) return std::nullopt;
 
+    // Column names match the actual cdclient.sqlite schema (FDB-converted)
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_,
         "SELECT id, render_asset, icon_asset, IconID, shader_id, "
         "effect1, effect2, effect3, effect4, effect5, effect6, "
-        "animationGroupIDs, fadeAsset, usedropshadow, preloadAnimations, "
-        "animationSpeed, fadeinTime FROM RenderComponent WHERE id = ?",
+        "animationGroupIDs, fade, usedropshadow, preloadAnimations, "
+        "fadeInTime FROM RenderComponent WHERE id = ?",
         -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
 
     sqlite3_bind_int(stmt, 1, id);
@@ -256,11 +257,11 @@ std::optional<CdRenderComponent> CdClient::get_render_component(int32_t id) cons
         rc.effect5 = get_int(stmt, 9);
         rc.effect6 = get_int(stmt, 10);
         rc.animation_group_ids = get_int(stmt, 11);
-        rc.fade_asset = get_text(stmt, 12);
-        rc.use_fade_in = get_int(stmt, 13) != 0;
+        rc.fade_asset = "";
+        rc.use_fade_in = get_int(stmt, 12) != 0;
         rc.preload_animations = get_int(stmt, 14) != 0;
-        rc.anim_speed = get_float(stmt, 15);
-        rc.fade_in_time = get_float(stmt, 16);
+        rc.anim_speed = 1.0f;
+        rc.fade_in_time = get_float(stmt, 15);
         result = rc;
     }
     sqlite3_finalize(stmt);

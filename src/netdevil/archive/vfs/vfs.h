@@ -6,6 +6,8 @@
 // All file paths are normalized to lowercase forward-slash format
 // matching the CRC convention used in PK archives.
 
+#include "netdevil/archive/pk/pk_reader.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -15,8 +17,6 @@
 #include <vector>
 
 namespace lu::assets {
-
-class PkArchive;
 
 enum class VfsMode {
     Unpacked,   // Read from directory tree
