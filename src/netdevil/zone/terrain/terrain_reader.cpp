@@ -200,36 +200,36 @@ TerrainMesh terrain_generate_mesh(const TerrainFile& terrain) {
     for (const auto& chunk : terrain.chunks) {
         if (chunk.heightmap.empty() || chunk.width <= 1 || chunk.height <= 1) continue;
 
-        uint32_t w = chunk.width;
-        uint32_t h = chunk.height;
+        // Ghidra RE of FUN_010699b0: width = X columns, height = Z rows
+        // heightmap index = z_row * width + x_col
+        uint32_t w = chunk.width;  // X dimension
+        uint32_t h = chunk.height; // Z dimension
         float s = chunk.scale;
         if (s <= 0) s = 1.0f;
 
         uint32_t baseIdx = static_cast<uint32_t>(out.vertices.size() / 3);
 
-        // Vertex generation matching DarkflameServer:
-        //   outer loop: col (i), inner loop: row (j)
-        //   heightmap index: width * col + row
-        for (uint32_t i = 0; i < w; ++i) {
-            for (uint32_t j = 0; j < h; ++j) {
-                uint32_t idx = w * i + j;
+        // Outer = Z rows, inner = X columns (matching client iteration order)
+        for (uint32_t zi = 0; zi < h; ++zi) {
+            for (uint32_t xi = 0; xi < w; ++xi) {
+                uint32_t idx = zi * w + xi;
                 float y = (idx < chunk.heightmap.size()) ? chunk.heightmap[idx] : 0.0f;
-                float x = (static_cast<float>(i) + (chunk.offset_x / s)) * s;
+                float x = (static_cast<float>(xi) + (chunk.offset_x / s)) * s;
                 float worldY = (y / s) * s;
-                float z = (static_cast<float>(j) + (chunk.offset_z / s)) * s;
+                float z = (static_cast<float>(zi) + (chunk.offset_z / s)) * s;
                 out.vertices.push_back(x);
                 out.vertices.push_back(worldY);
                 out.vertices.push_back(z);
             }
         }
 
-        // Triangle generation: two per quad, stride = chunk.height
-        for (uint32_t i = 1; i < w; ++i) {
-            for (uint32_t j = 1; j < h; ++j) {
-                uint32_t tl = baseIdx + (i - 1) * h + (j - 1);
-                uint32_t tr = baseIdx + (i)     * h + (j - 1);
-                uint32_t bl = baseIdx + (i - 1) * h + (j);
-                uint32_t br = baseIdx + (i)     * h + (j);
+        // Triangle generation: stride = w (X columns per Z row)
+        for (uint32_t zi = 1; zi < h; ++zi) {
+            for (uint32_t xi = 1; xi < w; ++xi) {
+                uint32_t tl = baseIdx + (zi - 1) * w + (xi - 1);
+                uint32_t tr = baseIdx + (zi - 1) * w + xi;
+                uint32_t bl = baseIdx + zi * w + (xi - 1);
+                uint32_t br = baseIdx + zi * w + xi;
 
                 out.indices.push_back(tl); out.indices.push_back(tr); out.indices.push_back(bl);
                 out.indices.push_back(tr); out.indices.push_back(br); out.indices.push_back(bl);
@@ -310,11 +310,13 @@ TerrainVertexColors terrain_generate_colors(const TerrainFile& terrain, TerrainC
 
     for (const auto& chunk : terrain.chunks) {
         if (chunk.heightmap.empty() || chunk.width <= 1 || chunk.height <= 1) continue;
+        // Ghidra RE: width = X columns, height = Z rows
+        // heightmap index = z_row * width + x_col
         uint32_t w = chunk.width, h = chunk.height;
 
-        for (uint32_t i = 0; i < w; ++i) {
-            for (uint32_t j = 0; j < h; ++j) {
-                uint32_t idx = w * i + j;
+        for (uint32_t zi = 0; zi < h; ++zi) {
+            for (uint32_t xi = 0; xi < w; ++xi) {
+                uint32_t idx = zi * w + xi;
                 float y = (idx < chunk.heightmap.size()) ? chunk.heightmap[idx] : 0.0f;
                 float rgb[3] = {0.6f, 0.6f, 0.6f};
 
@@ -324,8 +326,8 @@ TerrainVertexColors terrain_generate_colors(const TerrainFile& terrain, TerrainC
                     break;
                 case TerrainColorMode::ColorMap:
                     if (!chunk.color_map.empty() && chunk.color_map_res > 0 && w > 1 && h > 1) {
-                        float ci = (static_cast<float>(i) / (w-1)) * (chunk.color_map_res-1);
-                        float cj = (static_cast<float>(j) / (h-1)) * (chunk.color_map_res-1);
+                        float ci = (static_cast<float>(xi) / (w-1)) * (chunk.color_map_res-1);
+                        float cj = (static_cast<float>(zi) / (h-1)) * (chunk.color_map_res-1);
                         uint32_t cu = std::min(static_cast<uint32_t>(ci), chunk.color_map_res-1);
                         uint32_t cv = std::min(static_cast<uint32_t>(cj), chunk.color_map_res-1);
                         uint32_t ti = (cu * chunk.color_map_res + cv) * 4;
@@ -340,8 +342,8 @@ TerrainVertexColors terrain_generate_colors(const TerrainFile& terrain, TerrainC
                     break;
                 case TerrainColorMode::SceneMap:
                     if (!chunk.scene_map.empty() && chunk.color_map_res > 0 && w > 1 && h > 1) {
-                        float ci = (static_cast<float>(i) / (w-1)) * (chunk.color_map_res-1);
-                        float cj = (static_cast<float>(j) / (h-1)) * (chunk.color_map_res-1);
+                        float ci = (static_cast<float>(xi) / (w-1)) * (chunk.color_map_res-1);
+                        float cj = (static_cast<float>(zi) / (h-1)) * (chunk.color_map_res-1);
                         uint32_t cu = std::min(static_cast<uint32_t>(ci), chunk.color_map_res-1);
                         uint32_t cv = std::min(static_cast<uint32_t>(cj), chunk.color_map_res-1);
                         uint32_t si = cu * chunk.color_map_res + cv;
@@ -349,12 +351,9 @@ TerrainVertexColors terrain_generate_colors(const TerrainFile& terrain, TerrainC
                     }
                     break;
                 case TerrainColorMode::TextureWeights:
-                    // Texture map stores RGBA per texel — each channel is the weight for one
-                    // of the 4 texture layers. Visualize as: R=layer0, G=layer1, B=layer2.
-                    // Layer 3 (alpha) contributes to brightness.
                     if (!chunk.texture_map.empty() && chunk.tex_map_res > 0 && w > 1 && h > 1) {
-                        float ci = (static_cast<float>(i) / (w-1)) * (chunk.tex_map_res-1);
-                        float cj = (static_cast<float>(j) / (h-1)) * (chunk.tex_map_res-1);
+                        float ci = (static_cast<float>(xi) / (w-1)) * (chunk.tex_map_res-1);
+                        float cj = (static_cast<float>(zi) / (h-1)) * (chunk.tex_map_res-1);
                         uint32_t cu = std::min(static_cast<uint32_t>(ci), chunk.tex_map_res-1);
                         uint32_t cv = std::min(static_cast<uint32_t>(cj), chunk.tex_map_res-1);
                         uint32_t ti = (cu * chunk.tex_map_res + cv) * 4;

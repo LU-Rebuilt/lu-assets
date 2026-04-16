@@ -48,16 +48,21 @@ struct TerrainFlair {
 
 struct TerrainChunk {
     uint32_t chunk_id = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    float offset_x = 0;
-    float offset_z = 0;
+
+    // Axis mapping (from Ghidra RE of FUN_010699b0, terrain normal computation):
+    //   Outer loop iterates height (rows = Z), inner loop iterates width (cols = X)
+    //   Heightmap index = z_row * width + x_col
+    //   Normal X/Z are swapped at the end, confirming width=X, height=Z
+    uint32_t width = 0;     // X dimension (columns)
+    uint32_t height = 0;    // Z dimension (rows)
+    float offset_x = 0;     // world-space X origin
+    float offset_z = 0;     // world-space Z origin
     uint32_t shader_id = 0;        // Version < 32 only
     uint32_t texture_ids[4] = {};   // Terrain layer texture indices
     float scale = 1.0f;
 
-    std::vector<float> heightmap;       // width * height floats
-    uint32_t color_map_res = 0;
+    std::vector<float> heightmap;       // height * width floats (Z_rows * X_cols)
+    uint32_t color_map_res = 0;         // version < 32: width-1, version >= 32: read from file
     std::vector<uint8_t> color_map;     // color_map_res^2 * 4 bytes (RGBA)
     std::vector<uint8_t> light_map;     // Variable size baked lighting data
     uint32_t tex_map_res = 0;           // Version >= 32
