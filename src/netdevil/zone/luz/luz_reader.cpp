@@ -188,8 +188,8 @@ LuzFile luz_parse(std::span<const uint8_t> data) {
             LuzTransition trans;
 
             if (revision < 40) {
-                r.read_string8();  // unknown_string (u1_str)
-                r.read_f32();      // unknown_float (width or similar)
+                trans.name  = r.read_string8();
+                trans.width = r.read_f32();
             }
 
             trans.points.resize(pts_per_trans);
@@ -213,7 +213,7 @@ LuzFile luz_parse(std::span<const uint8_t> data) {
         size_t   chunk_start = r.pos();
 
         if (r.remaining() >= chunk_size && chunk_size >= 8) {
-            uint32_t chunk_version = r.read_u32();
+            luz.path_chunk_version = r.read_u32();
             uint32_t num_paths     = r.read_u32();
             luz.paths.reserve(num_paths);
 
@@ -222,132 +222,149 @@ LuzFile luz_parse(std::span<const uint8_t> data) {
                 path.path_version = r.read_u32();
                 path.name         = read_wstr8(r);
 
-                // Legacy: version <= 2 has a type_name string that overrides the type enum
                 if (path.path_version <= 2) {
-                    read_wstr8(r); // type_name (ignored — all live files use path_version >= 12)
-                }
+                    // Legacy format: type_name string present, no behavior field,
+                    // unified waypoint format (pos + rot + lock + speed + wait + config).
+                    // Verified by binary analysis of all shipped v35 LUZ files.
+                    path.type_name = read_wstr8(r);
+                    path.path_type = static_cast<LuzPathType>(r.read_u32());
+                    path.flags     = r.read_u32();
 
-                path.path_type = static_cast<LuzPathType>(r.read_u32());
-                path.flags     = r.read_u32();
-                path.behavior  = static_cast<LuzPathBehavior>(r.read_u32());
+                    uint32_t num_waypoints = r.read_u32();
+                    path.waypoints.reserve(num_waypoints);
 
-                // ── Path-level type-specific data ─────────────────────────────
-                switch (path.path_type) {
-
-                case LuzPathType::MovingPlatform:
-                    // Verified: LevelPath::FromBuffer, condition (pathVersion >= 13 and < 18)
-                    if (path.path_version >= 18) {
-                        path.platform.time_based_movement = r.read_bool();
-                    } else if (path.path_version >= 13) {
-                        path.platform.traveling_audio_guid = read_wstr8(r);
-                    }
-                    break;
-
-                case LuzPathType::Property:
-                    path.property.property_path_type = r.read_u32();
-                    path.property.price              = r.read_u32();
-                    path.property.rental_time        = r.read_u32();
-                    path.property.associated_zone    = r.read_u64();
-                    if (path.path_version >= 5) {
-                        path.property.display_name = read_wstr8(r);  // u1_wstr
-                        path.property.display_desc = read_wstr32(r); // u4_wstr
-                    }
-                    if (path.path_version >= 6) path.property.property_type        = r.read_u32();
-                    if (path.path_version >= 7) {
-                        path.property.clone_limit            = r.read_u32();
-                        path.property.reputation_multiplier  = r.read_f32();
-                        path.property.period_type            = r.read_u32();
-                    }
-                    if (path.path_version >= 8) {
-                        path.property.achievement_required = r.read_u32();
-                        path.property.zone_position        = read_vec3(r);
-                        path.property.max_build_height     = r.read_f32();
-                    }
-                    break;
-
-                case LuzPathType::Camera:
-                    path.camera.next_path = read_wstr8(r);
-                    if (path.path_version >= 14) {
-                        path.camera.rotate_player = r.read_bool();
-                    }
-                    break;
-
-                case LuzPathType::Spawner:
-                    path.spawner.spawned_lot        = r.read_u32();
-                    path.spawner.respawn_time       = r.read_u32();
-                    path.spawner.max_to_spawn       = r.read_s32();
-                    path.spawner.num_to_maintain    = r.read_u32();
-                    path.spawner.spawner_object_id  = r.read_u64();
-                    if (path.path_version >= 9) {
-                        path.spawner.activate_on_load = r.read_bool();
-                    }
-                    break;
-
-                default: // NPC, Showcase, Racing, Rail: no path-level extra data
-                    break;
-                }
-
-                // ── Waypoints ─────────────────────────────────────────────────
-                uint32_t num_waypoints = r.read_u32();
-                path.waypoints.reserve(num_waypoints);
-
-                for (uint32_t j = 0; j < num_waypoints; ++j) {
-                    LuzWaypoint wp;
-                    wp.position = read_vec3(r);
-
-                    switch (path.path_type) {
-
-                    case LuzPathType::NPC:
-                        wp.config = ldf_parse_binary(r);
-                        break;
-
-                    case LuzPathType::MovingPlatform:
-                        wp.rotation      = read_quat_wxyz(r);
-                        wp.lock_player   = r.read_bool();
+                    for (uint32_t j = 0; j < num_waypoints; ++j) {
+                        LuzWaypoint wp;
+                        wp.position       = read_vec3(r);
+                        wp.rotation       = read_quat_wxyz(r);
+                        wp.lock_player    = r.read_bool();
                         wp.platform_speed = r.read_f32();
                         wp.platform_wait  = r.read_f32();
-                        if (path.path_version >= 13) {
-                            wp.depart_audio_guid = read_wstr8(r);
-                            wp.arrive_audio_guid = read_wstr8(r);
+                        wp.config         = ldf_parse_binary(r);
+                        path.waypoints.push_back(std::move(wp));
+                    }
+                } else {
+                    path.path_type = static_cast<LuzPathType>(r.read_u32());
+                    path.flags     = r.read_u32();
+                    path.behavior  = static_cast<LuzPathBehavior>(r.read_u32());
+
+                    // ── Path-level type-specific data ─────────────────────────
+                    switch (path.path_type) {
+
+                    case LuzPathType::MovingPlatform:
+                        if (path.path_version >= 18) {
+                            path.platform.time_based_movement = r.read_bool();
+                        } else if (path.path_version >= 13) {
+                            path.platform.traveling_audio_guid = read_wstr8(r);
+                        }
+                        break;
+
+                    case LuzPathType::Property:
+                        path.property.property_path_type = r.read_u32();
+                        path.property.price              = r.read_u32();
+                        path.property.rental_time        = r.read_u32();
+                        path.property.associated_zone    = r.read_u64();
+                        if (path.path_version >= 5) {
+                            path.property.display_name = read_wstr8(r);
+                            path.property.display_desc = read_wstr32(r);
+                        }
+                        if (path.path_version >= 6) path.property.property_type        = r.read_u32();
+                        if (path.path_version >= 7) {
+                            path.property.clone_limit            = r.read_u32();
+                            path.property.reputation_multiplier  = r.read_f32();
+                            path.property.period_type            = r.read_u32();
+                        }
+                        if (path.path_version >= 8) {
+                            path.property.achievement_required = r.read_u32();
+                            path.property.zone_position        = read_vec3(r);
+                            path.property.max_build_height     = r.read_f32();
                         }
                         break;
 
                     case LuzPathType::Camera:
-                        wp.rotation          = read_quat_wxyz(r);
-                        wp.camera_time       = r.read_f32();
-                        wp.camera_fov        = r.read_f32();
-                        wp.camera_tension    = r.read_f32();
-                        wp.camera_continuity = r.read_f32();
-                        wp.camera_bias       = r.read_f32();
+                        path.camera.next_path = read_wstr8(r);
+                        if (path.path_version >= 14) {
+                            path.camera.rotate_player = r.read_bool();
+                        }
                         break;
 
                     case LuzPathType::Spawner:
-                        wp.rotation = read_quat_wxyz(r);
-                        wp.config   = ldf_parse_binary(r);
-                        break;
-
-                    case LuzPathType::Racing:
-                        wp.rotation                    = read_quat_wxyz(r);
-                        wp.is_reset_node               = r.read_bool();
-                        wp.is_non_horizontal_camera    = r.read_bool();
-                        wp.plane_width                 = r.read_f32();
-                        wp.plane_height                = r.read_f32();
-                        wp.shortest_distance_to_end    = r.read_f32();
-                        break;
-
-                    case LuzPathType::Rail:
-                        wp.rotation = read_quat_wxyz(r);
-                        if (path.path_version > 16) {
-                            wp.rail_speed = r.read_f32();
+                        path.spawner.spawned_lot        = r.read_u32();
+                        path.spawner.respawn_time       = r.read_u32();
+                        path.spawner.max_to_spawn       = r.read_s32();
+                        path.spawner.num_to_maintain    = r.read_u32();
+                        path.spawner.spawner_object_id  = r.read_u64();
+                        if (path.path_version >= 9) {
+                            path.spawner.activate_on_load = r.read_bool();
                         }
-                        wp.config = ldf_parse_binary(r);
                         break;
 
-                    default: // Property, Showcase: position only
+                    default:
                         break;
                     }
 
-                    path.waypoints.push_back(std::move(wp));
+                    // ── Waypoints ─────────────────────────────────────────────
+                    uint32_t num_waypoints = r.read_u32();
+                    path.waypoints.reserve(num_waypoints);
+
+                    for (uint32_t j = 0; j < num_waypoints; ++j) {
+                        LuzWaypoint wp;
+                        wp.position = read_vec3(r);
+
+                        switch (path.path_type) {
+
+                        case LuzPathType::NPC:
+                            wp.config = ldf_parse_binary(r);
+                            break;
+
+                        case LuzPathType::MovingPlatform:
+                            wp.rotation      = read_quat_wxyz(r);
+                            wp.lock_player   = r.read_bool();
+                            wp.platform_speed = r.read_f32();
+                            wp.platform_wait  = r.read_f32();
+                            if (path.path_version >= 13) {
+                                wp.depart_audio_guid = read_wstr8(r);
+                                wp.arrive_audio_guid = read_wstr8(r);
+                            }
+                            break;
+
+                        case LuzPathType::Camera:
+                            wp.rotation          = read_quat_wxyz(r);
+                            wp.camera_time       = r.read_f32();
+                            wp.camera_fov        = r.read_f32();
+                            wp.camera_tension    = r.read_f32();
+                            wp.camera_continuity = r.read_f32();
+                            wp.camera_bias       = r.read_f32();
+                            break;
+
+                        case LuzPathType::Spawner:
+                            wp.rotation = read_quat_wxyz(r);
+                            wp.config   = ldf_parse_binary(r);
+                            break;
+
+                        case LuzPathType::Racing:
+                            wp.rotation                    = read_quat_wxyz(r);
+                            wp.is_reset_node               = r.read_bool();
+                            wp.is_non_horizontal_camera    = r.read_bool();
+                            wp.plane_width                 = r.read_f32();
+                            wp.plane_height                = r.read_f32();
+                            wp.shortest_distance_to_end    = r.read_f32();
+                            break;
+
+                        case LuzPathType::Rail:
+                            wp.rotation = read_quat_wxyz(r);
+                            if (path.path_version > 16) {
+                                wp.rail_speed = r.read_f32();
+                            }
+                            wp.config = ldf_parse_binary(r);
+                            break;
+
+                        default:
+                            break;
+                        }
+
+                        path.waypoints.push_back(std::move(wp));
+                    }
                 }
 
                 luz.paths.push_back(std::move(path));

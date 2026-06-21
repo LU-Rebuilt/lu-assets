@@ -53,6 +53,17 @@ if(NOT SQLite3_FOUND)
     endif()
 endif()
 
+# nlohmann/json - for JSON serialization of asset types
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 # pugixml - for LXFML and other XML parsing
 FetchContent_Declare(
     pugixml
@@ -95,7 +106,7 @@ endif()
 # CMake package config (install targets) — only when building standalone
 # with system-installed deps. FetchContent deps (zlibstatic, sqlite3_lib)
 # can't be exported, so skip install when they're in use.
-if(LU_ASSETS_IS_TOP_LEVEL AND ZLIB_FOUND AND SQLite3_FOUND)
+if(LU_ASSETS_IS_TOP_LEVEL AND ZLIB_FOUND AND SQLite3_FOUND AND nlohmann_json_FOUND)
     include(CMakePackageConfigHelpers)
 
     install(TARGETS lu_assets

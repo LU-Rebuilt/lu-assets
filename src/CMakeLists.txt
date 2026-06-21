@@ -10,6 +10,7 @@ target_link_libraries(lu_assets PUBLIC
     ZLIB::ZLIB
     SQLite::SQLite3
     pugixml::pugixml
+    nlohmann_json::nlohmann_json
 )
 
 add_subdirectory(common)

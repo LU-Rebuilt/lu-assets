@@ -69,6 +69,23 @@ struct CdPhysicsComponent {
     float player_radius;
 };
 
+struct CdDestructibleComponent {
+    int32_t id;
+    int32_t faction;
+    std::string faction_list;     // comma-separated, e.g. "1,4"
+    int32_t life;
+    int32_t imagination;
+    int32_t loot_matrix_index;
+    int32_t currency_index;
+    int32_t level;
+    float armor;
+    int32_t death_behavior;
+    bool is_npc;
+    int32_t attack_priority;
+    bool is_smashable;
+    int32_t difficulty_level;
+};
+
 struct CdObjectInfo {
     int32_t id;
     std::string name;
@@ -211,6 +228,10 @@ public:
 
     // PhysicsComponent by component ID
     std::optional<CdPhysicsComponent> get_physics_component(int32_t id) const;
+
+    // DestructibleComponent by component ID (health/armor/imagination
+    // baseline, faction, loot, NPC/smashable flags)
+    std::optional<CdDestructibleComponent> get_destructible_component(int32_t id) const;
 
     // Objects table by LOT
     std::optional<CdObjectInfo> get_object(int32_t lot) const;

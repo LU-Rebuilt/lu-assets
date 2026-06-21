@@ -87,6 +87,8 @@ struct LuzTransitionPoint {
 //   2 points if version <= 33 or version >= 39  (all live client files: version 41 → 2 points)
 //   5 points if version 34-38
 struct LuzTransition {
+    std::string name;      // version < 40: transition name (u1_str)
+    float       width = 0; // version < 40: transition width
     std::vector<LuzTransitionPoint> points;
 };
 
@@ -194,6 +196,7 @@ struct LuzWaypoint {
 struct LuzPath {
     uint32_t       path_version = 0;
     std::string    name;
+    std::string    type_name;   // path_version <= 2 only: legacy type name string
     LuzPathType    path_type = LuzPathType::NPC;
     uint32_t       flags = 0;
     LuzPathBehavior behavior = LuzPathBehavior::Loop;
@@ -224,6 +227,7 @@ struct LuzFile {
     std::string zone_description;  // (version > 30)
 
     std::vector<LuzTransition> transitions;  // version >= 32
+    uint32_t path_chunk_version = 0;         // version >= 35: path chunk version (rejected if >= 2)
     std::vector<LuzPath>       paths;        // version >= 35
 };
 } // namespace lu::assets

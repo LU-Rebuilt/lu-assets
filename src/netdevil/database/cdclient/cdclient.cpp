@@ -80,10 +80,12 @@ bool CdClient::open_from_client(const fs::path& client_root) {
         if (fs::exists(p) && open(p)) return true;
     }
 
-    // Try FDB files (auto-convert to SQLite)
+    // Try FDB files (auto-convert to SQLite in memory)
     std::vector<fs::path> fdb_paths = {
         client_root / "res" / "cdclient.fdb",
         client_root / "cdclient.fdb",
+        client_root / "res" / "ivantest.fdb",
+        client_root / "ivantest.fdb",
     };
     for (const auto& p : fdb_paths) {
         if (fs::exists(p)) {
@@ -291,6 +293,41 @@ std::optional<CdPhysicsComponent> CdClient::get_physics_component(int32_t id) co
         pc.player_height = get_float(stmt, 7);
         pc.player_radius = get_float(stmt, 8);
         result = pc;
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+std::optional<CdDestructibleComponent> CdClient::get_destructible_component(int32_t id) const {
+    if (!db_) return std::nullopt;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_,
+        "SELECT id, faction, factionList, life, imagination, "
+        "LootMatrixIndex, CurrencyIndex, level, armor, death_behavior, "
+        "isnpc, attack_priority, isSmashable, difficultyLevel "
+        "FROM DestructibleComponent WHERE id = ?",
+        -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+
+    sqlite3_bind_int(stmt, 1, id);
+    std::optional<CdDestructibleComponent> result;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        CdDestructibleComponent dc;
+        dc.id                 = get_int(stmt, 0);
+        dc.faction            = get_int(stmt, 1);
+        dc.faction_list       = get_text(stmt, 2);
+        dc.life               = get_int(stmt, 3);
+        dc.imagination        = get_int(stmt, 4);
+        dc.loot_matrix_index  = get_int(stmt, 5);
+        dc.currency_index     = get_int(stmt, 6);
+        dc.level              = get_int(stmt, 7);
+        dc.armor              = get_float(stmt, 8);
+        dc.death_behavior     = get_int(stmt, 9);
+        dc.is_npc             = get_int(stmt, 10) != 0;
+        dc.attack_priority    = get_int(stmt, 11);
+        dc.is_smashable       = get_int(stmt, 12) != 0;
+        dc.difficulty_level   = get_int(stmt, 13);
+        result = dc;
     }
     sqlite3_finalize(stmt);
     return result;

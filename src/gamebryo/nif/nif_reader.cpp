@@ -99,12 +99,23 @@ void read_ni_av_object(BinaryReader& r, uint32_t version, NifNode& node,
     node.translation.y = r.read_f32();
     node.translation.z = r.read_f32();
 
-    // Rotation matrix: 3x3 = 9 floats (row-major)
-    // Convert to quaternion for storage.
+    // Rotation matrix: 3x3 = 9 floats.
+    //
+    // IMPORTANT: Gamebryo stores matrices in ROW-MAJOR order and applies
+    // them with ROW vectors (v_world = v_local * M). Standard GLM uses
+    // COLUMN-MAJOR storage with COLUMN vectors (v_world = M * v_local).
+    // For the same rotation R, M_gamebryo = M_standard^T (transposes).
+    //
+    // Verified against Ghidra RE of NiQuaternion::ToRotation @ 0040ff40:
+    // the matrix built from a quaternion there is the transpose of the
+    // GLM/standard RH convention matrix. Writing bytes from the file
+    // into m[row][col] stores the Gamebryo-layout matrix directly; we
+    // transpose on read so Shepperd's extraction (which assumes the
+    // standard convention) yields the correct quaternion.
     float m[3][3];
     for (int row = 0; row < 3; ++row) {
         for (int col = 0; col < 3; ++col) {
-            m[row][col] = r.read_f32();
+            m[col][row] = r.read_f32();  // transpose during read
         }
     }
 
