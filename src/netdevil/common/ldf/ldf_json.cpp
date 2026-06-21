@@ -46,7 +46,24 @@ void from_json(const json& j, LdfEntry& e) {
 json ldf_config_to_json(const LdfConfig& config) {
     json arr = json::array();
     for (auto& [key, val] : config) {
-        arr.push_back(json{{"key", key}, {"value", val}});
+        auto colon = val.find(':');
+        if (colon != std::string::npos) {
+            int type_id = std::atoi(val.substr(0, colon).c_str());
+            std::string raw = val.substr(colon + 1);
+            arr.push_back(json{
+                {"key", key},
+                {"type", type_id},
+                {"type_name", ldf_type_name(static_cast<LdfType>(type_id))},
+                {"raw_value", raw},
+            });
+        } else {
+            arr.push_back(json{
+                {"key", key},
+                {"type", 255},
+                {"type_name", "Unknown"},
+                {"raw_value", val},
+            });
+        }
     }
     return arr;
 }
@@ -54,8 +71,16 @@ json ldf_config_to_json(const LdfConfig& config) {
 LdfConfig ldf_config_from_json(const json& j) {
     LdfConfig config;
     for (auto& item : j) {
-        config.emplace_back(item.at("key").get<std::string>(),
-                            item.at("value").get<std::string>());
+        std::string key = item.at("key").get<std::string>();
+        if (item.contains("type") && item.contains("raw_value")) {
+            int type_id = item.at("type").get<int>();
+            std::string raw = item.at("raw_value").get<std::string>();
+            config.emplace_back(std::move(key),
+                                std::to_string(type_id) + ":" + raw);
+        } else {
+            config.emplace_back(std::move(key),
+                                item.at("value").get<std::string>());
+        }
     }
     return config;
 }
