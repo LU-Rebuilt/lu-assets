@@ -265,8 +265,11 @@ void to_json(json& j, const LvlFile& f) {
         {"version", f.version},
         {"revision", f.revision},
         {"has_environment", f.has_environment},
+        {"env_data_version", f.env_data_version},
         {"environment", f.environment},
+        {"has_objects", f.has_objects},
         {"objects", f.objects},
+        {"has_particles", f.has_particles},
         {"particles", f.particles},
     };
 }
@@ -274,8 +277,11 @@ void from_json(const json& j, LvlFile& f) {
     j.at("version").get_to(f.version);
     f.revision = j.value("revision", 0u);
     f.has_environment = j.value("has_environment", false);
+    f.env_data_version = j.value("env_data_version", uint16_t(1));
     if (j.contains("environment")) j.at("environment").get_to(f.environment);
+    f.has_objects = j.value("has_objects", false);
     f.objects = j.value("objects", std::vector<LvlObject>{});
+    f.has_particles = j.value("has_particles", false);
     f.particles = j.value("particles", std::vector<LvlParticle>{});
 }
 

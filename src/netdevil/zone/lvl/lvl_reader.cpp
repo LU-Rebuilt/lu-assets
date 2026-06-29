@@ -315,12 +315,14 @@ static LvlParticle parse_particle(BinaryReader& r, uint32_t version) {
     // effect_names: u4_wstr (u32 char_count + UTF-16LE)
     p.effect_names = read_u4_wstr(r);
 
-    // null_terminator: 2 bytes [0x00, 0x00] if version < 46
-    if (version < 46) r.skip(2);
-
-    // config_data: u4_wstr parsed as LDF
-    std::string cfg_str = read_u4_wstr(r);
-    if (!cfg_str.empty()) p.config = ldf_parse(cfg_str);
+    if (version < 46) {
+        // null_terminator: 2 bytes [0x00, 0x00]
+        r.skip(2);
+    } else {
+        // config_data: u4_wstr parsed as LDF (added in v46, replacing null_terminator)
+        std::string cfg_str = read_u4_wstr(r);
+        if (!cfg_str.empty()) p.config = ldf_parse(cfg_str);
+    }
 
     return p;
 }
@@ -359,9 +361,11 @@ LvlFile lvl_parse(std::span<const uint8_t> data) {
             // Environment chunk
             lvl.environment     = parse_env_chunk(data, chunk.data_offset, lvl.version);
             lvl.has_environment = true;
+            lvl.env_data_version = chunk.data_version;
         }
         else if (chunk.id == 2001 && data_available >= 4) {
             // SceneObjectData chunk
+            lvl.has_objects = true;
             BinaryReader cr(data.subspan(chunk.data_offset, data_available));
             uint32_t obj_count = cr.read_u32();
             lvl.objects.reserve(obj_count);
@@ -376,6 +380,7 @@ LvlFile lvl_parse(std::span<const uint8_t> data) {
         }
         else if (chunk.id == 2002 && data_available >= 4) {
             // Particle chunk
+            lvl.has_particles = true;
             BinaryReader cr(data.subspan(chunk.data_offset, data_available));
             uint32_t count = cr.read_u32();
             lvl.particles.reserve(count);

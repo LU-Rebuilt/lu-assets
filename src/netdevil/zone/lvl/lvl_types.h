@@ -198,8 +198,11 @@ struct LvlFile {
 
     LvlEnvironmentData environment;  // From chunk 2000 (may be empty/default)
     bool               has_environment = false;
+    uint16_t           env_data_version = 1;    // CHNK data_version for chunk 2000
 
     std::vector<LvlObject>   objects;    // From chunk 2001
+    bool                     has_objects = false;
     std::vector<LvlParticle> particles;  // From chunk 2002
+    bool                     has_particles = false;
 };
 } // namespace lu::assets

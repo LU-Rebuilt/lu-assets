@@ -2,13 +2,22 @@
 #include "netdevil/common/ldf/ldf_json.h"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 using json = nlohmann::json;
 
 static json float_to_json(float f) {
     if (std::isinf(f)) return f > 0 ? "inf" : "-inf";
-    if (std::isnan(f)) return "nan";
+    if (std::isnan(f)) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, 4);
+        return "nan:0x" + ([](uint32_t v) {
+            char buf[9];
+            std::snprintf(buf, sizeof(buf), "%08x", v);
+            return std::string(buf);
+        })(bits);
+    }
     return f;
 }
 
@@ -17,8 +26,15 @@ static float float_from_json(const json& j) {
         auto s = j.get<std::string>();
         if (s == "inf")  return std::numeric_limits<float>::infinity();
         if (s == "-inf") return -std::numeric_limits<float>::infinity();
-        if (s == "nan")  return std::numeric_limits<float>::quiet_NaN();
+        if (s.substr(0, 6) == "nan:0x") {
+            uint32_t bits = std::stoul(s.substr(4), nullptr, 16);
+            float f;
+            std::memcpy(&f, &bits, 4);
+            return f;
+        }
+        if (s == "nan") return std::numeric_limits<float>::quiet_NaN();
     }
+    if (j.is_null()) return std::numeric_limits<float>::quiet_NaN();
     return j.get<float>();
 }
 
@@ -27,22 +43,22 @@ namespace lu::assets {
 // ── Vec3 / Quat ──────────────────────────────────────────────────────────────
 
 void to_json(json& j, const Vec3& v) {
-    j = json{{"x", v.x}, {"y", v.y}, {"z", v.z}};
+    j = json{{"x", float_to_json(v.x)}, {"y", float_to_json(v.y)}, {"z", float_to_json(v.z)}};
 }
 void from_json(const json& j, Vec3& v) {
-    j.at("x").get_to(v.x);
-    j.at("y").get_to(v.y);
-    j.at("z").get_to(v.z);
+    v.x = float_from_json(j.at("x"));
+    v.y = float_from_json(j.at("y"));
+    v.z = float_from_json(j.at("z"));
 }
 
 void to_json(json& j, const Quat& q) {
-    j = json{{"x", q.x}, {"y", q.y}, {"z", q.z}, {"w", q.w}};
+    j = json{{"x", float_to_json(q.x)}, {"y", float_to_json(q.y)}, {"z", float_to_json(q.z)}, {"w", float_to_json(q.w)}};
 }
 void from_json(const json& j, Quat& q) {
-    j.at("x").get_to(q.x);
-    j.at("y").get_to(q.y);
-    j.at("z").get_to(q.z);
-    j.at("w").get_to(q.w);
+    q.x = float_from_json(j.at("x"));
+    q.y = float_from_json(j.at("y"));
+    q.z = float_from_json(j.at("z"));
+    q.w = float_from_json(j.at("w"));
 }
 
 // ── Scene ────────────────────────────────────────────────────────────────────

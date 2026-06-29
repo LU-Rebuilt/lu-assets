@@ -23,6 +23,7 @@ static void write_object_config(BinaryWriter& w, const std::vector<LdfEntry>& co
         return;
     }
     std::string text = ldf_write_text(config);
+    if (!text.empty() && text.back() == '\n') text.pop_back();
     w.write_u32(static_cast<uint32_t>(text.size()));
     for (char c : text) w.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
 }
@@ -47,13 +48,20 @@ static size_t write_chunk_header(BinaryWriter& w, uint32_t id,
     w.write_u16(header_version);
     w.write_u16(data_version);
     size_t size_pos = w.pos();
-    w.write_u32(0);
-    w.write_u32(0);
+    w.write_u32(0);  // total_size (patched later)
+    w.write_u32(0);  // data_offset (patched later)
+    // 12 bytes of 0xCD padding — matches the original 32-byte CHNK header
+    // produced by the NetDevil/Gamebryo level editor
+    for (int i = 0; i < 12; ++i) w.write_u8(0xCD);
     return size_pos;
 }
 
 static void finish_chunk(BinaryWriter& w, size_t size_pos, size_t data_start) {
     size_t chunk_pos = size_pos - 12;
+    // Pad with 0xCD: at least 1 byte, aligned to 16-byte boundary
+    size_t unpadded = w.pos() - chunk_pos;
+    size_t padded = (unpadded + 16) & ~size_t(15);
+    for (size_t i = unpadded; i < padded; ++i) w.write_u8(0xCD);
     uint32_t total = static_cast<uint32_t>(w.pos() - chunk_pos);
     w.patch_u32(size_pos, total);
     w.patch_u32(size_pos + 4, static_cast<uint32_t>(data_start));
@@ -162,12 +170,13 @@ std::vector<uint8_t> lvl_write(const LvlFile& lvl) {
         if (version < 46) {
             particle_payload.write_u8(0);
             particle_payload.write_u8(0);
+        } else {
+            std::string cfg_str = ldf_write_text(p.config);
+            if (!cfg_str.empty() && cfg_str.back() == '\n') cfg_str.pop_back();
+            particle_payload.write_u32(static_cast<uint32_t>(cfg_str.size()));
+            for (char c : cfg_str)
+                particle_payload.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
         }
-
-        std::string cfg_str = ldf_write_text(p.config);
-        particle_payload.write_u32(static_cast<uint32_t>(cfg_str.size()));
-        for (char c : cfg_str)
-            particle_payload.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
     }
 
     // === Chunk 1000 (fib) ===
@@ -184,7 +193,7 @@ std::vector<uint8_t> lvl_write(const LvlFile& lvl) {
     if (lvl.has_environment) {
         w.patch_u32(ofs_env_pos, static_cast<uint32_t>(w.pos()));
 
-        size_t env_size_pos = write_chunk_header(w, 2000, 1, 1);
+        size_t env_size_pos = write_chunk_header(w, 2000, 1, lvl.env_data_version);
         size_t env_data_start = w.pos();
 
         size_t lighting_ofs_pos = w.pos(); w.write_u32(0);
@@ -206,7 +215,7 @@ std::vector<uint8_t> lvl_write(const LvlFile& lvl) {
     }
 
     // === Chunk 2001 (objects) ===
-    if (!lvl.objects.empty()) {
+    if (lvl.has_objects || !lvl.objects.empty()) {
         w.patch_u32(ofs_obj_pos, static_cast<uint32_t>(w.pos()));
 
         size_t obj_size_pos = write_chunk_header(w, 2001, 1, 1);
@@ -216,7 +225,7 @@ std::vector<uint8_t> lvl_write(const LvlFile& lvl) {
     }
 
     // === Chunk 2002 (particles) ===
-    if (!lvl.particles.empty()) {
+    if (lvl.has_particles || !lvl.particles.empty()) {
         w.patch_u32(ofs_particle_pos, static_cast<uint32_t>(w.pos()));
 
         size_t particle_size_pos = write_chunk_header(w, 2002, 1, 1);

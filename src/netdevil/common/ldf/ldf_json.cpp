@@ -75,8 +75,12 @@ LdfConfig ldf_config_from_json(const json& j) {
         if (item.contains("type") && item.contains("raw_value")) {
             int type_id = item.at("type").get<int>();
             std::string raw = item.at("raw_value").get<std::string>();
-            config.emplace_back(std::move(key),
-                                std::to_string(type_id) + ":" + raw);
+            if (type_id == 255) {
+                config.emplace_back(std::move(key), std::move(raw));
+            } else {
+                config.emplace_back(std::move(key),
+                                    std::to_string(type_id) + ":" + raw);
+            }
         } else {
             config.emplace_back(std::move(key),
                                 item.at("value").get<std::string>());
