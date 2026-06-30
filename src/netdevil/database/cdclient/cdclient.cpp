@@ -69,30 +69,49 @@ bool CdClient::open_fdb(const fs::path& fdb_path, const fs::path& output_path) {
 }
 
 bool CdClient::open_from_client(const fs::path& client_root) {
-    // Try SQLite files first (preferred — no conversion needed)
-    std::vector<fs::path> sqlite_paths = {
-        client_root / "res" / "CDServer.sqlite",
-        client_root / "res" / "cdclient.sqlite",
-        client_root / "CDServer.sqlite",
-        client_root / "cdclient.sqlite",
-    };
-    for (const auto& p : sqlite_paths) {
-        if (fs::exists(p) && open(p)) return true;
-    }
+    // Some early clients nest everything under a "client/" subdirectory
+    fs::path roots[] = { client_root, client_root / "client" };
 
-    // Try FDB files (auto-convert to SQLite in memory)
-    std::vector<fs::path> fdb_paths = {
-        client_root / "res" / "cdclient.fdb",
-        client_root / "cdclient.fdb",
-        client_root / "res" / "ivantest.fdb",
-        client_root / "ivantest.fdb",
-    };
-    for (const auto& p : fdb_paths) {
-        if (fs::exists(p)) {
-            // Convert to SQLite next to the FDB
-            fs::path out = p;
-            out.replace_extension(".converted.sqlite");
-            if (open_fdb(p, out)) return true;
+    for (const auto& root : roots) {
+        if (!fs::exists(root)) continue;
+
+        // Candidate search directories: res/ first, then root itself
+        fs::path search_dirs[] = { root / "res", root };
+
+        // Try well-known SQLite names first (no conversion needed)
+        for (const auto& dir : search_dirs) {
+            for (const auto& name : {
+                "CDServer.sqlite", "cdclient.sqlite", "CDClient.sqlite",
+            }) {
+                fs::path p = dir / name;
+                if (fs::exists(p) && open(p)) return true;
+            }
+        }
+
+        // Scan for any *.sqlite that isn't a converted file (versioned names like cdclient-1.7.45.sqlite)
+        for (const auto& dir : search_dirs) {
+            if (!fs::exists(dir) || !fs::is_directory(dir)) continue;
+            for (auto& entry : fs::directory_iterator(dir)) {
+                if (!entry.is_regular_file()) continue;
+                auto ext = entry.path().extension().string();
+                std::string stem = entry.path().stem().string();
+                if (ext != ".sqlite") continue;
+                if (stem.find(".converted") != std::string::npos) continue;
+                if (open(entry.path())) return true;
+            }
+        }
+
+        // Try FDB files (auto-convert to SQLite)
+        for (const auto& dir : search_dirs) {
+            for (const auto& name : {
+                "cdclient.fdb", "CDClient.fdb", "ivantest.fdb",
+            }) {
+                fs::path p = dir / name;
+                if (!fs::exists(p)) continue;
+                fs::path out = p;
+                out.replace_extension(".converted.sqlite");
+                if (open_fdb(p, out)) return true;
+            }
         }
     }
 
