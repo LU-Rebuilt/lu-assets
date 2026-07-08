@@ -1,23 +1,26 @@
 #pragma once
 
-#include <cstdint>
+#include "common/text_lines/text_lines.h"
+
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
 
 namespace lu::assets {
-
-// AST (Asset List) plain-text parser.
-// Each line has an "A:" prefix followed by a file path (e.g. "A:res\audio\file.fsb").
-// Lines starting with '#' are comments. Empty lines are skipped.
-// The "A:" prefix is stripped and backslashes are normalized to forward slashes.
 
 struct AstError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
 struct AstFile {
+    // Every line of the file verbatim (comments, blank lines, original separators,
+    // per-line terminators) — what ast_write emits for byte-identical round-trips.
+    std::vector<TextLine> lines;
+
+    // Parsed view derived from `lines` at parse time (comments and the "A:" prefix stripped,
+    // backslashes normalized). Rebuilt by
+    // ast_parse; edits meant to reach disk belong in `lines`.
     std::vector<std::string> asset_paths;
 };
 } // namespace lu::assets

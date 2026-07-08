@@ -48,3 +48,16 @@ TEST(SCM, SkipsEmptyLines) {
     EXPECT_EQ(scm.commands[0], "/cmd1");
     EXPECT_EQ(scm.commands[1], "/cmd2");
 }
+
+// ---- Round-trip (scm_write) ----
+
+#include "netdevil/macros/scm/scm_writer.h"
+
+TEST(SCM, RoundTripPreservesBlankLinesAndTerminators) {
+    std::string text = "setvar x 1\r\n\r\nplayanim wave"; // mixed CRLF + no final newline
+    std::vector<uint8_t> data(text.begin(), text.end());
+    auto scm = scm_parse(data);
+    EXPECT_EQ(scm_write(scm), data);
+    ASSERT_EQ(scm.commands.size(), 2u);
+    EXPECT_EQ(scm.commands[1], "playanim wave");
+}

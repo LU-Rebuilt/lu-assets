@@ -1,27 +1,16 @@
 #include "netdevil/macros/scm/scm_reader.h"
 
-#include <sstream>
-
 namespace lu::assets {
 
 ScmFile scm_parse(std::span<const uint8_t> data) {
     ScmFile scm;
+    scm.lines = split_lines(data);
 
-    std::string text(reinterpret_cast<const char*>(data.data()), data.size());
-    std::istringstream stream(text);
-    std::string line;
-
-    while (std::getline(stream, line)) {
-        // Strip trailing \r if present (Windows line endings)
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-
-        if (line.empty()) {
+    for (const TextLine& line : scm.lines) {
+        if (line.text.empty()) {
             continue;
         }
-
-        scm.commands.push_back(std::move(line));
+        scm.commands.push_back(line.text);
     }
 
     return scm;

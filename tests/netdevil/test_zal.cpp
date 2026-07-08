@@ -48,3 +48,16 @@ TEST(ZAL, SkipsEmptyLines) {
     EXPECT_EQ(zal.asset_paths[0], "res/file1.dds");
     EXPECT_EQ(zal.asset_paths[1], "res/file2.dds");
 }
+
+// ---- Round-trip (zal_write) ----
+
+#include "netdevil/zone/zal/zal_writer.h"
+
+TEST(ZAL, RoundTripPreservesBlankLinesAndSeparators) {
+    std::string text = "audio\\music.fsb\r\n\r\nmesh\\env\\rock.nif\n";
+    std::vector<uint8_t> data(text.begin(), text.end());
+    auto zal = zal_parse(data);
+    EXPECT_EQ(zal_write(zal), data);
+    ASSERT_EQ(zal.asset_paths.size(), 2u);
+    EXPECT_EQ(zal.asset_paths[0], "audio/music.fsb");
+}

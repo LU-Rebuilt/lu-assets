@@ -51,3 +51,19 @@ TEST(AST, EmptyDataReturnsEmptyList) {
     auto ast = ast_parse(empty);
     EXPECT_TRUE(ast.asset_paths.empty());
 }
+
+// ---- Round-trip (ast_write) ----
+
+#include "netdevil/zone/ast/ast_writer.h"
+
+TEST(AST, RoundTripPreservesCommentsAndSeparators) {
+    // Comments, blank lines, CRLF terminators, "A:" prefixes, and backslashes must all
+    // survive a parse -> write round-trip byte-identically; only the parsed
+    // asset_paths view is normalized.
+    std::string text = "# header comment\r\nA:mesh\\env\\rock.nif\r\n\r\nA:mesh\\env\\tree.nif";
+    std::vector<uint8_t> data(text.begin(), text.end());
+    auto ast = ast_parse(data);
+    EXPECT_EQ(ast_write(ast), data);
+    ASSERT_EQ(ast.asset_paths.size(), 2u);
+    EXPECT_EQ(ast.asset_paths[0], "mesh/env/rock.nif");
+}

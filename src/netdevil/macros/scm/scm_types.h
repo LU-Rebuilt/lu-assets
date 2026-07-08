@@ -1,22 +1,25 @@
 #pragma once
 
-#include <cstdint>
+#include "common/text_lines/text_lines.h"
+
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
 
 namespace lu::assets {
-
-// SCM (Script Macro) plain-text parser.
-// One slash command per line (e.g. "/gmadditem 3").
-// Used for GM macros and test scripts.
 
 struct ScmError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
 struct ScmFile {
+    // Every line of the file verbatim (comments, blank lines, original separators,
+    // per-line terminators) — what scm_write emits for byte-identical round-trips.
+    std::vector<TextLine> lines;
+
+    // Parsed view derived from `lines` at parse time (blank lines dropped). Rebuilt by
+    // scm_parse; edits meant to reach disk belong in `lines`.
     std::vector<std::string> commands;
 };
 } // namespace lu::assets

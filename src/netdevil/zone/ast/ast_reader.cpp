@@ -1,37 +1,30 @@
 #include "netdevil/zone/ast/ast_reader.h"
 
 #include <algorithm>
-#include <sstream>
 
 namespace lu::assets {
 
 AstFile ast_parse(std::span<const uint8_t> data) {
     AstFile ast;
+    ast.lines = split_lines(data);
 
-    std::string text(reinterpret_cast<const char*>(data.data()), data.size());
-    std::istringstream stream(text);
-    std::string line;
-
-    while (std::getline(stream, line)) {
-        // Strip trailing \r if present (Windows line endings)
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-
+    for (const TextLine& line : ast.lines) {
         // Skip empty lines and comments
-        if (line.empty() || line[0] == '#') {
+        if (line.text.empty() || line.text[0] == '#') {
             continue;
         }
 
+        std::string path = line.text;
+
         // Strip "A:" prefix
-        if (line.size() >= 2 && line[0] == 'A' && line[1] == ':') {
-            line = line.substr(2);
+        if (path.size() >= 2 && path[0] == 'A' && path[1] == ':') {
+            path = path.substr(2);
         }
 
         // Normalize backslashes to forward slashes
-        std::replace(line.begin(), line.end(), '\\', '/');
+        std::replace(path.begin(), path.end(), '\\', '/');
 
-        ast.asset_paths.push_back(std::move(line));
+        ast.asset_paths.push_back(std::move(path));
     }
 
     return ast;
