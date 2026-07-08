@@ -165,10 +165,23 @@ struct NifMaterial {
     float alpha = 1.0f;                    // Transparency (1 = opaque)
 };
 
-// Texture reference extracted from NiSourceTexture blocks.
+// NiSourceTexture — the actual texture file reference. useExternal selects the union member:
+// true (the common case for LU assets) -> filename is a relative path under the texture root;
+// false -> the texture is embedded as a NiPixelData block (pixel_data_ref), not extracted here.
 struct NifTextureRef {
-    std::string filename;     // Texture file path (relative)
+    std::string filename;     // Texture file path (relative), when useExternal
     uint32_t block_index = 0;
+    bool use_external = true;
+    int32_t pixel_data_ref = -1; // block index of embedded NiPixelData, when !useExternal
+};
+
+// NiTexturingProperty — the texture-slot table attached to a NiTriShape/NiTriStrips via its
+// properties[] list. Only the base (slot 0) texture is resolved to a NifTextureRef here — the
+// other 6 texture-map slots (dark/detail/gloss/glow/bump/decal) exist in the format but aren't
+// consumed by anything yet.
+struct NifTexturingProperty {
+    uint32_t block_index = 0;
+    int32_t base_texture_source_ref = -1; // block index of the base slot's NiSourceTexture, or -1
 };
 
 // Node in the scene hierarchy (NiNode, NiLODNode, NiTriShape, NiTriStrips).
@@ -386,6 +399,28 @@ struct NifFile {
     std::vector<NifMesh> meshes;
     std::vector<NifMaterial> materials;
     std::vector<NifTextureRef> textures;
+    std::vector<NifTexturingProperty> texturing_properties;
+
+    // Resolves a node's base-slot texture filename by walking node.properties[] ->
+    // NiTexturingProperty (matched by block_index) -> base_texture_source_ref ->
+    // NifTextureRef (matched by block_index). Returns "" if the node has no texturing
+    // property, or its base slot has no external source texture.
+    std::string ResolveBaseTextureFilename(const NifNode& node) const {
+        for (int32_t propRef : node.properties) {
+            if (propRef < 0) continue;
+            for (const auto& tp : texturing_properties) {
+                if (static_cast<int32_t>(tp.block_index) != propRef) continue;
+                if (tp.base_texture_source_ref < 0) return {};
+                for (const auto& tex : textures) {
+                    if (static_cast<int32_t>(tex.block_index) == tp.base_texture_source_ref) {
+                        return tex.use_external ? tex.filename : std::string{};
+                    }
+                }
+                return {};
+            }
+        }
+        return {};
+    }
 
     // Parsed data -- animation (found in .kf files)
     std::vector<NifControllerSequence> sequences;

@@ -13,6 +13,7 @@ NifExtractionResult extractNifGeometry(const NifFile& nif,
         NifExtractedMesh em;
         em.vertices.reserve(mesh.vertices.size() * 3);
         em.normals.reserve(mesh.vertices.size() * 3);
+        em.uvs.reserve(mesh.vertices.size() * 2);
 
         for (const auto& v : mesh.vertices) {
             em.vertices.push_back(v.position.x * scale + pos_x);
@@ -21,6 +22,8 @@ NifExtractionResult extractNifGeometry(const NifFile& nif,
             em.normals.push_back(v.normal.x);
             em.normals.push_back(v.normal.y);
             em.normals.push_back(v.normal.z);
+            em.uvs.push_back(v.u);
+            em.uvs.push_back(v.v);
         }
 
         em.indices.reserve(mesh.triangles.size() * 3);
@@ -32,6 +35,8 @@ NifExtractionResult extractNifGeometry(const NifFile& nif,
                 em.indices.push_back(tri.c);
             }
         }
+
+        em.block_index = mesh.block_index;
 
         result.total_vertices += static_cast<uint32_t>(mesh.vertices.size());
         result.total_triangles += static_cast<uint32_t>(mesh.triangles.size());

@@ -493,6 +493,210 @@ NifMaterial parse_material_property(BinaryReader& r, uint32_t version,
 }
 
 // ============================================================================
+// NiSourceTexture: the actual texture file/pixel-data reference.
+// Inherits NiTexture -> NiObjectNET (NiTexture itself adds no fields).
+// Verified field-by-field against nif.xml (public Gamebryo format spec — matches the
+// CLAUDE.md "NIF/Ni* use NifSkope/nif.xml, not Ghidra" convention), niobject NiSourceTexture:
+//   Use External: byte
+//   [Use External==0 && until 10.0.1.3] Use Internal: byte  -- absent, LU is 20.3.0.9
+//   File Name: FilePath, cond Use External==1
+//     -- FilePath is `SizedString until 20.0.0.5` / `NiFixedString (u32 string-table index)
+//        since 20.1.0.3` -- LU (20.3.0.9) uses the string-table-index form, NOT a raw string32.
+//   File Name: FilePath, cond Use External==0 && since 10.1.0.0 (embedded-image original name)
+//   Pixel Data: Ref<NiPixelFormat>, cond Use External==1, since 10.1.0.0
+//   Pixel Data: Ref<NiPixelFormat>, cond Use External==0, since 10.0.1.4
+//   Format Prefs: FormatPrefs (12 bytes: PixelLayout u32, MipMapFormat u32, AlphaFormat u32)
+//   Is Static: byte
+//   Direct Render: bool, since 10.1.0.103
+//   Persist Render Data: bool, since 20.2.0.4
+// ============================================================================
+
+NifTextureRef parse_source_texture(BinaryReader& r, uint32_t version,
+                                    const std::vector<std::string>& string_table) {
+    NifTextureRef tex;
+    auto net = read_ni_object_net(r, version, string_table);
+    (void)net; // name not currently surfaced on NifTextureRef
+
+    tex.use_external = r.read_u8() != 0; // "Use External": byte, not bool-sized differently
+
+    if (tex.use_external) {
+        // FilePath, since 20.1.0.3 (LU: 20.3.0.9) is a NiFixedString: u32 string-table index.
+        if (version >= 0x14010003) {
+            tex.filename = resolve_string(string_table, r.read_s32());
+        } else {
+            tex.filename = r.read_string32();
+        }
+    } else if (version >= 0x0A010000) {
+        // Embedded-image original filename (same FilePath encoding), then Pixel Data ref.
+        if (version >= 0x14010003) {
+            tex.filename = resolve_string(string_table, r.read_s32());
+        } else {
+            tex.filename = r.read_string32();
+        }
+    }
+
+    // Pixel Data ref: present for (external, since 10.1.0.0) or (internal, since 10.0.1.4) —
+    // both hold for LU's 20.3.0.9 regardless of use_external.
+    tex.pixel_data_ref = r.read_s32();
+
+    r.read_u32(); // Format Prefs: Pixel Layout
+    r.read_u32(); // Format Prefs: Use Mipmaps
+    r.read_u32(); // Format Prefs: Alpha Format
+    r.read_u8();  // Is Static (byte)
+    if (version >= 0x0A010067) { // since="10.1.0.103"
+        r.read_bool(); // Direct Render
+    }
+    if (version >= 0x14020004) { // since="20.2.0.4"
+        r.read_bool(); // Persist Render Data
+    }
+
+    return tex;
+}
+
+// ============================================================================
+// NiTexturingProperty: the texture-slot table (base/dark/detail/gloss/glow/bump/decal/normal/
+// parallax/shader). Inherits NiProperty -> NiObjectNET (no transform, no extra NiProperty
+// fields — NiProperty itself is fieldless).
+// Verified field-by-field against nif.xml at LU's version (20.3.0.9):
+//   Flags: TexturingFlags (ushort), since 20.1.0.2 -- ALWAYS present at this version (not
+//     gated the way NiMaterialProperty's bare NiProperty flags are; this is NiTexturingProperty's
+//     OWN typed Flags field, unconditional past 10.0.1.2).
+//   Apply Mode: ApplyMode (u32), since 3.3.0.13 until 20.1.0.1 -- absent for LU (past 20.1.0.1).
+//   Texture Count: uint, default 7 -- ALWAYS present.
+//   Has Base/Dark/Detail/Gloss/Glow Texture: bool + TexDesc each.
+//   Has Bump Map Texture: bool cond TextureCount>5, + TexDesc + 2 floats (luma scale/offset) +
+//     Matrix22 (bump matrix, 4 floats) if present.
+//   Has Normal/Parallax Texture: bool cond TextureCount>6/7, since 20.2.0.5 -- LU is 20.3.0.9
+//     so these slots exist when Texture Count (7 by default) supports them.
+//   Has Decal 0-3 Texture: bool cond TextureCount > 6/7/8/9 (since 20.2.0.5 thresholds) + TexDesc.
+//   Num Shader Textures: uint, since 10.0.1.0 -- ALWAYS present (no "has" bool gating it).
+//   Shader Textures: ShaderTexDesc[Num Shader Textures].
+// TexDesc at LU's version (>= 20.1.0.3, so Clamp Mode/Filter Mode are REPLACED by a single
+// packed Flags field; UV Set field removed at this version too; Max Anisotropy absent, since
+// only 20.5.0.4):
+//   Source: Ref<NiSourceTexture> (i32)
+//   Flags: TexturingMapFlags (ushort), since 20.1.0.3
+//   Has Texture Transform: bool, since 10.1.0.0
+//   [if has transform] Translation/Scale/Center: TexCoord (2 floats each), Rotation: float,
+//     Transform Method: TransformMethod (u32).
+// ============================================================================
+
+int32_t read_tex_desc_source_ref(BinaryReader& r, uint32_t version) {
+    int32_t sourceRef = r.read_s32(); // Source: Ref<NiSourceTexture>
+
+    if (version >= 0x14010003) { // since="20.1.0.3"
+        r.read_u16(); // Flags (packed clamp+filter mode), TexturingMapFlags
+    } else {
+        r.read_u32(); // Clamp Mode
+        r.read_u32(); // Filter Mode
+        if (version >= 0x0A010000) {
+            r.read_u32(); // UV Set (removed at 20.1.0.3+)
+        }
+    }
+
+    if (version >= 0x14050004) { // since="20.5.0.4"
+        r.read_u16(); // Max Anisotropy
+    }
+
+    if (version >= 0x0A010000) { // "Has Texture Transform" since 10.1.0.0
+        bool hasTransform = r.read_bool();
+        if (hasTransform) {
+            r.read_f32(); r.read_f32(); // Translation (TexCoord)
+            r.read_f32(); r.read_f32(); // Scale (TexCoord)
+            r.read_f32();               // Rotation
+            r.read_u32();               // Transform Method
+            r.read_f32(); r.read_f32(); // Center (TexCoord)
+        }
+    }
+    return sourceRef;
+}
+
+NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
+                                               const std::vector<std::string>& string_table) {
+    NifTexturingProperty prop;
+    auto net = read_ni_object_net(r, version, string_table);
+    (void)net;
+
+    // Flags: TexturingFlags (ushort) since 20.1.0.2 — replaces the plain ushort used
+    // until="10.0.1.2"; both are 2 bytes, so a single unconditional read covers all NIF
+    // versions this reader targets (LU is 20.3.0.9; nothing between 10.0.1.2 and 20.1.0.2
+    // leaves the field absent per nif.xml).
+    r.read_u16(); // Flags
+
+    if (version >= 0x03030013 && version < 0x14010001) { // since 3.3.0.13, until 20.1.0.1
+        r.read_u32(); // Apply Mode
+    }
+
+    uint32_t textureCount = r.read_u32(); // Texture Count
+
+    bool hasBase = r.read_bool();
+    if (hasBase) {
+        prop.base_texture_source_ref = read_tex_desc_source_ref(r, version);
+    }
+
+    bool hasDark = r.read_bool();
+    if (hasDark) read_tex_desc_source_ref(r, version);
+
+    bool hasDetail = r.read_bool();
+    if (hasDetail) read_tex_desc_source_ref(r, version);
+
+    bool hasGloss = r.read_bool();
+    if (hasGloss) read_tex_desc_source_ref(r, version);
+
+    bool hasGlow = r.read_bool();
+    if (hasGlow) read_tex_desc_source_ref(r, version);
+
+    if (textureCount > 5) {
+        bool hasBump = r.read_bool();
+        if (hasBump) {
+            read_tex_desc_source_ref(r, version);
+            r.read_f32(); // Bump Map Luma Scale
+            r.read_f32(); // Bump Map Luma Offset
+            r.read_f32(); r.read_f32(); r.read_f32(); r.read_f32(); // Bump Map Matrix (2x2)
+        }
+    }
+
+    if (version >= 0x14020005) { // since="20.2.0.5"
+        if (textureCount > 6) {
+            bool hasNormal = r.read_bool();
+            if (hasNormal) read_tex_desc_source_ref(r, version);
+        }
+        if (textureCount > 7) {
+            bool hasParallax = r.read_bool();
+            if (hasParallax) {
+                read_tex_desc_source_ref(r, version);
+                r.read_f32(); // Parallax Offset
+            }
+        }
+    }
+
+    // Decal 0-3: nif.xml has two threshold sets depending on version — TextureCount >
+    // 6/7/8/9 until="20.2.0.4", but TextureCount > 8/9/10/11 since="20.2.0.5". LU (20.3.0.9)
+    // uses the higher thresholds; verified byte-exact against a real NiTexturingProperty block
+    // (cre_cp_spider.nif, TextureCount=9 → only Decal 0 present, matching 9>8 and not 9>9).
+    uint32_t decalBase = (version >= 0x14020005) ? 8 : 6;
+    for (int decalIdx = 0; decalIdx < 4; ++decalIdx) {
+        uint32_t threshold = decalBase + static_cast<uint32_t>(decalIdx);
+        if (textureCount <= threshold) break; // nif.xml conditions are strictly increasing
+        bool hasDecal = r.read_bool();
+        if (hasDecal) read_tex_desc_source_ref(r, version);
+    }
+
+    if (version >= 0x0A000100) { // "Num Shader Textures" since 10.0.1.0, unconditional
+        uint32_t numShaderTex = r.read_u32();
+        for (uint32_t i = 0; i < numShaderTex; ++i) {
+            bool hasMap = r.read_bool();
+            if (hasMap) {
+                read_tex_desc_source_ref(r, version);
+                r.read_u32(); // Map ID
+            }
+        }
+    }
+
+    return prop;
+}
+
+// ============================================================================
 // NiTextKeyExtraData: timestamped event markers
 // Inherits NiExtraData -> NiObject.
 // Layout: NiObjectNET fields (name only, no controller in NiExtraData) +
@@ -935,6 +1139,19 @@ NifFile nif_parse(std::span<const uint8_t> data) {
             else if (type_name == "NiMaterialProperty") {
                 NifMaterial mat = parse_material_property(r, nif.version, nif.string_table);
                 nif.materials.push_back(std::move(mat));
+            }
+            // NiSourceTexture (texture file/pixel-data reference)
+            else if (type_name == "NiSourceTexture") {
+                NifTextureRef tex = parse_source_texture(r, nif.version, nif.string_table);
+                tex.block_index = block_idx;
+                nif.textures.push_back(std::move(tex));
+            }
+            // NiTexturingProperty (texture-slot table attached to NiTriShape/NiTriStrips)
+            else if (type_name == "NiTexturingProperty") {
+                NifTexturingProperty prop =
+                    parse_texturing_property(r, nif.version, nif.string_table);
+                prop.block_index = block_idx;
+                nif.texturing_properties.push_back(std::move(prop));
             }
             // ---- Animation blocks (found in .kf files) ----
             // NiControllerSequence (animation clip definition)

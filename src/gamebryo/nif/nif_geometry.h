@@ -14,8 +14,11 @@ namespace lu::assets {
 struct NifExtractedMesh {
     std::vector<float> vertices;  // xyz interleaved, world space
     std::vector<float> normals;   // xyz interleaved
+    std::vector<float> uvs;       // uv interleaved, first UV set only (NifVertex::u/v)
     std::vector<uint32_t> indices;
     std::string name;
+    uint32_t block_index = 0;     // source NifMesh::block_index, for looking up the owning
+                                   // NifNode (data_ref) e.g. to resolve its texturing property.
 };
 
 struct NifExtractionResult {

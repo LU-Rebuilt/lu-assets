@@ -1,5 +1,6 @@
 add_executable(test_gamebryo
     test_nif.cpp
+    test_nif_texturing.cpp
     test_kfm.cpp
     test_settings.cpp
 )
