@@ -12,6 +12,30 @@
 #include "gamebryo/kfm/kfm_writer.h"
 #include "gamebryo/settings/settings_reader.h"
 #include "gamebryo/settings/settings_writer.h"
+#include "netdevil/archive/pk/pk_reader.h"
+#include "netdevil/archive/sd0/sd0_reader.h"
+#include "netdevil/zone/luz/luz_reader.h"
+#include "netdevil/zone/luz/luz_writer.h"
+#include "netdevil/zone/lvl/lvl_reader.h"
+#include "netdevil/zone/lvl/lvl_writer.h"
+#include "netdevil/zone/terrain/terrain_reader.h"
+#include "netdevil/zone/terrain/terrain_writer.h"
+#include "netdevil/zone/ast/ast_reader.h"
+#include "netdevil/zone/ast/ast_writer.h"
+#include "netdevil/zone/zal/zal_reader.h"
+#include "netdevil/zone/zal/zal_writer.h"
+#include "netdevil/zone/aud/aud_reader.h"
+#include "netdevil/zone/aud/aud_writer.h"
+#include "netdevil/zone/lutriggers/lutriggers_reader.h"
+#include "netdevil/zone/lutriggers/lutriggers_writer.h"
+#include "netdevil/macros/scm/scm_reader.h"
+#include "netdevil/macros/scm/scm_writer.h"
+#include "netdevil/archive/pki/pki_reader.h"
+#include "netdevil/archive/pki/pki_writer.h"
+#include "microsoft/dds/dds_reader.h"
+#include "microsoft/dds/dds_writer.h"
+#include "microsoft/tga/tga_reader.h"
+#include "microsoft/tga/tga_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -20,6 +44,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -71,6 +96,26 @@ void check_file(const fs::path& path, const RoundTripFunc& round_trip, FormatSta
     auto data = read_file(path);
     if (data.empty()) return; // unreadable/empty — not a round-trip failure
 
+    // Some client dumps (1.7.45, 0.179.12, leaks) ship individual files still
+    // SD0-compressed on disk. Round-trip the decompressed payload — that's the actual
+    // format file; SD0 re-compression byte-identity is a separate (zlib-dependent) story.
+    if (data.size() >= 5 && memcmp(data.data(), "sd0\x01\xff", 5) == 0) {
+        try {
+            data = lu::assets::sd0_decompress(data);
+        } catch (const std::exception& ex) {
+            // The 1.7.45 / 0.179.12 dumps contain patcher-cache artifacts: several sd0
+            // streams concatenated into one file (a second sd0 magic appears mid-file).
+            // Those aren't single-format files, so they're skips, not format failures.
+            stats.skipped++;
+            if (stats.messages.size() < 10) {
+                stats.messages.push_back("SKIP  " + path.string() +
+                                         ": sd0 decompress failed (concatenated patcher stream?): " +
+                                         ex.what());
+            }
+            return;
+        }
+    }
+
     if (magics.size() > 0 && !has_magic(data, magics)) {
         stats.skipped++;
         if (stats.messages.size() < 10) {
@@ -110,6 +155,85 @@ std::string lower_ext(const fs::path& p) {
     return e;
 }
 
+// .settings has no text header, but every known file starts with its version string as
+// u8(5) + "2.3.0" — distinctive enough to identify entries inside PK archives, which
+// index by path CRC and carry no filenames.
+bool sniff_settings(const std::vector<uint8_t>& d) {
+    return d.size() >= 6 && d[0] == 5 && memcmp(d.data() + 1, "2.3.0", 5) == 0;
+}
+
+// Round-trip every Gamebryo-format entry inside a .pk archive. Entries are identified by
+// magic (no filenames in the pack index); non-Gamebryo entries (textures, scripts, ...)
+// are simply not counted. Comparison target is the extracted (SD0-decompressed) bytes —
+// i.e. the actual Gamebryo file, as the client itself sees it.
+void check_pk(const fs::path& pk_path,
+              const RoundTripFunc& nif_rt, const RoundTripFunc& kfm_rt,
+              const RoundTripFunc& settings_rt,
+              std::map<std::string, FormatStats>& stats) {
+    auto file_data = read_file(pk_path);
+    if (file_data.empty()) return;
+
+    std::unique_ptr<lu::assets::PkArchive> archive;
+    try {
+        archive = std::make_unique<lu::assets::PkArchive>(file_data);
+    } catch (const std::exception& ex) {
+        auto& st = stats["pk:(archive)"];
+        st.parse_fail++;
+        if (st.messages.size() < 10) {
+            st.messages.push_back("PKERR " + pk_path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    for (size_t i = 0; i < archive->entry_count(); ++i) {
+        std::vector<uint8_t> data;
+        try {
+            data = archive->extract(i);
+        } catch (const std::exception&) {
+            continue; // extraction failures are pk-reader territory, not round-trip
+        }
+
+        const char* fmt = nullptr;
+        if (has_magic(data, {"Gamebryo File Format", "NetImmerse File Format"})) {
+            fmt = "pk:nif-container";
+        } else if (has_magic(data, {";Gamebryo KFM File Version"})) {
+            fmt = "pk:.kfm";
+        } else if (sniff_settings(data)) {
+            fmt = "pk:.settings";
+        } else {
+            continue;
+        }
+
+        auto& st = stats[fmt];
+        const RoundTripFunc& rt = fmt == std::string("pk:.kfm") ? kfm_rt
+                                : fmt == std::string("pk:.settings") ? settings_rt
+                                : nif_rt;
+        std::vector<uint8_t> out;
+        try {
+            out = rt(data);
+        } catch (const std::exception& ex) {
+            st.parse_fail++;
+            if (st.messages.size() < 10) {
+                st.messages.push_back("PARSE " + pk_path.string() + "[entry " +
+                                      std::to_string(i) + "]: " + ex.what());
+            }
+            continue;
+        }
+        if (out == data) {
+            st.ok++;
+        } else {
+            st.mismatch++;
+            if (st.messages.size() < 10) {
+                char buf[200];
+                snprintf(buf, sizeof(buf), "DIFF  %s[entry %zu]: size %zu -> %zu, first diff @ 0x%zx",
+                         pk_path.string().c_str(), i, data.size(), out.size(),
+                         first_diff(data, out));
+                st.messages.push_back(buf);
+            }
+        }
+    }
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[]) {
@@ -127,6 +251,41 @@ int main(int argc, char* argv[]) {
     const RoundTripFunc settings_rt = [](const std::vector<uint8_t>& d) {
         return lu::assets::settings_write(lu::assets::settings_parse(d));
     };
+    const RoundTripFunc luz_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::luz_write(lu::assets::luz_parse(d));
+    };
+    const RoundTripFunc lvl_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::lvl_write(lu::assets::lvl_parse(d));
+    };
+    const RoundTripFunc terrain_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::terrain_write(lu::assets::terrain_parse(d));
+    };
+    const RoundTripFunc ast_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::ast_write(lu::assets::ast_parse(d));
+    };
+    const RoundTripFunc zal_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::zal_write(lu::assets::zal_parse(d));
+    };
+    const RoundTripFunc scm_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::scm_write(lu::assets::scm_parse(d));
+    };
+    const RoundTripFunc aud_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::aud_write(lu::assets::aud_parse(d));
+    };
+    const RoundTripFunc lutriggers_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::lutriggers_write(lu::assets::lutriggers_parse(d));
+    };
+    const RoundTripFunc pki_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::pki_write(lu::assets::pki_parse(d));
+    };
+    const RoundTripFunc dds_rt = [](const std::vector<uint8_t>& d) {
+        auto dds = lu::assets::dds_parse_header(d);
+        std::span<const uint8_t> payload(d.data() + 128, d.size() - 128);
+        return lu::assets::dds_write(dds, payload);
+    };
+    const RoundTripFunc tga_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::tga_write(lu::assets::tga_parse(d));
+    };
 
     struct Handler {
         const RoundTripFunc* fn;
@@ -138,6 +297,19 @@ int main(int argc, char* argv[]) {
         {".etk", {&nif_rt, {"Gamebryo File Format", "NetImmerse File Format"}}},
         {".kfm", {&kfm_rt, {";Gamebryo KFM File Version"}}},
         {".settings", {&settings_rt, {}}}, // binary NiKFMTool format has no text magic
+        {".luz", {&luz_rt, {}}},
+        {".lvl", {&lvl_rt, {}}},
+        {".ast", {&ast_rt, {}}},
+        {".zal", {&zal_rt, {}}},
+        {".scm", {&scm_rt, {}}},
+        {".aud", {&aud_rt, {}}},
+        {".lutriggers", {&lutriggers_rt, {}}},
+        {".pki", {&pki_rt, {}}},
+        {".dds", {&dds_rt, {"DDS "}}},
+        {".tga", {&tga_rt, {}}},
+        // .raw is only the terrain format under maps/ — other .raw files (if any) are
+        // unrelated binary blobs, so scope by path in the walk below.
+        {".raw", {&terrain_rt, {}}},
     };
 
     std::map<std::string, FormatStats> stats;
@@ -151,8 +323,15 @@ int main(int argc, char* argv[]) {
                  root, fs::directory_options::skip_permission_denied)) {
             if (!e.is_regular_file()) continue;
             std::string ext = lower_ext(e.path());
+            if (ext == ".pk") {
+                check_pk(e.path(), nif_rt, kfm_rt, settings_rt, stats);
+                continue;
+            }
             auto it = handlers.find(ext);
             if (it == handlers.end()) continue;
+            if (ext == ".raw" && e.path().string().find("maps") == std::string::npos) {
+                continue; // non-terrain .raw
+            }
             check_file(e.path(), *it->second.fn, stats[ext], it->second.magics);
         }
     }
