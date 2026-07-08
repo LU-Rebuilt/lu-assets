@@ -71,8 +71,7 @@ SettingsFile settings_parse(std::span<const uint8_t> data) {
     if (r.remaining() < 4) {
         throw SettingsError("Settings: truncated at declared_sequence_count");
     }
-    uint32_t declared_count = r.read_u32();
-    (void)declared_count; // informational only; not used as loop bound
+    s.declared_sequence_count = r.read_u32(); // preserved for round-trip; not a loop bound
 
     // Read sequence entries until we detect the "Sequence Groups" section marker.
     // Each entry is: u32 entry_type + u8-prefixed name + u32 entry_id.

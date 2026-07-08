@@ -234,3 +234,26 @@ TEST(Settings, WrongSequencesMarkerThrows) {
     b.str8("BADMARKER"); // wrong section name
     EXPECT_THROW(settings_parse(b.data), SettingsError);
 }
+
+// ---- Round-trip (settings_write) ----
+
+#include "gamebryo/settings/settings_writer.h"
+
+TEST(Settings, RoundTripByteIdentical) {
+    auto data = build_one_sequence();
+    auto s = settings_parse(data);
+    auto out = settings_write(s);
+    EXPECT_EQ(out, data);
+}
+
+TEST(Settings, RoundTripPreservesDeclaredCount) {
+    // The declared count is unreliable in real files (it can undercount); the writer
+    // must emit the original value, not sequences.size().
+    auto data = build_one_sequence();
+    auto s = settings_parse(data);
+    s.sequences.push_back(s.sequences.back()); // diverge real count from declared
+    auto out = settings_write(s);
+    auto reparsed = settings_parse(out);
+    EXPECT_EQ(reparsed.declared_sequence_count, s.declared_sequence_count);
+    EXPECT_EQ(reparsed.sequences.size(), 2u);
+}

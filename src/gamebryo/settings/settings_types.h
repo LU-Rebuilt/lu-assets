@@ -124,6 +124,11 @@ struct SettingsFile {
     // Section type identifier preceding the "Sequences" marker. Always 1.
     uint32_t section_type_sequences = 0;
 
+    // The count field as written in the file. UNRELIABLE as a parse bound (complex
+    // files undercount it — see file comment), but preserved verbatim so writes are
+    // byte-identical; sequences.size() is the real entry count.
+    uint32_t declared_sequence_count = 0;
+
     // All entries from the "Sequences" section, including both animation
     // sequences (type=3) and sequence group names (type=2).
     // The declared count in the file header is unreliable; this vector
