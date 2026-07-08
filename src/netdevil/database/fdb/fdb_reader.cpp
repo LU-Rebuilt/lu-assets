@@ -157,6 +157,112 @@ std::vector<FdbTable> fdb_parse(std::span<const uint8_t> data) {
     return tables;
 }
 
+std::vector<FdbTable> fdb_parse_full(std::span<const uint8_t> data) {
+    FdbReader r(data);
+
+    int32_t table_count = r.read_i32();
+    if (table_count < 0 || table_count > 10000) {
+        throw FdbError("FDB: unreasonable table count: " + std::to_string(table_count));
+    }
+
+    size_t tables_saved = r.seek_pointer();
+
+    std::vector<FdbTable> tables;
+    tables.reserve(table_count);
+
+    for (int32_t t = 0; t < table_count; ++t) {
+        FdbTable table;
+
+        // === Column header ===
+        size_t col_saved = r.seek_pointer();
+        int32_t num_cols = r.read_i32();
+        table.name = r.read_string_indirect();
+
+        size_t cols_saved = r.seek_pointer();
+        table.columns.reserve(num_cols);
+        for (int32_t c = 0; c < num_cols; ++c) {
+            FdbColumn col;
+            col.type = static_cast<FdbDataType>(r.read_i32());
+            col.name = r.read_string_indirect();
+            table.columns.push_back(std::move(col));
+        }
+        r.seek(cols_saved);
+        r.seek(col_saved);
+
+        // === Row header ===
+        size_t row_header_saved = r.seek_pointer();
+        int32_t num_allocated_rows = r.read_i32();
+
+        size_t rows_saved = r.seek_pointer();
+        for (int32_t row = 0; row < num_allocated_rows; ++row) {
+            int32_t row_pointer = r.read_i32();
+            if (row_pointer == -1) continue;
+
+            size_t row_iter_saved = r.pos();
+            r.seek(static_cast<size_t>(row_pointer));
+
+            while (true) {
+                size_t row_info_saved = r.seek_pointer();
+                int32_t num_row_cols = r.read_i32();
+
+                size_t row_vals_saved = r.seek_pointer();
+
+                FdbRow fdb_row;
+                fdb_row.fields.reserve(num_row_cols);
+                for (int32_t c = 0; c < num_row_cols; ++c) {
+                    auto field_type = static_cast<FdbDataType>(r.read_i32());
+                    switch (field_type) {
+                        case FdbDataType::NOTHING:
+                            r.read_i32();
+                            fdb_row.fields.emplace_back(std::monostate{});
+                            break;
+                        case FdbDataType::INT32:
+                            fdb_row.fields.emplace_back(r.read_i32());
+                            break;
+                        case FdbDataType::REAL:
+                            fdb_row.fields.emplace_back(r.read_f32());
+                            break;
+                        case FdbDataType::TEXT_4:
+                        case FdbDataType::TEXT_8:
+                            fdb_row.fields.emplace_back(r.read_string_indirect());
+                            break;
+                        case FdbDataType::BOOL:
+                            fdb_row.fields.emplace_back(r.read_i32() != 0);
+                            break;
+                        case FdbDataType::INT64:
+                            fdb_row.fields.emplace_back(r.read_i64_indirect());
+                            break;
+                        case FdbDataType::UNUSED_2:
+                        case FdbDataType::UNUSED_7:
+                        default:
+                            r.read_i32();
+                            fdb_row.fields.emplace_back(std::monostate{});
+                            break;
+                    }
+                }
+
+                r.seek(row_vals_saved);
+                r.seek(row_info_saved);
+
+                table.rows.push_back(std::move(fdb_row));
+
+                int32_t linked = r.read_i32();
+                if (linked == -1) break;
+                r.seek(static_cast<size_t>(linked));
+            }
+
+            r.seek(row_iter_saved);
+        }
+        r.seek(rows_saved);
+        r.seek(row_header_saved);
+
+        tables.push_back(std::move(table));
+    }
+
+    r.seek(tables_saved);
+    return tables;
+}
+
 void fdb_to_sqlite_direct(std::span<const uint8_t> data, const std::string& output_path) {
     FdbReader r(data);
 

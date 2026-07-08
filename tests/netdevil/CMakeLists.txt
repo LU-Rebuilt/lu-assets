@@ -3,6 +3,7 @@ add_executable(test_netdevil
     test_sd0.cpp
     test_pk.cpp
     test_fdb.cpp
+    test_fdb_full.cpp
     test_luz.cpp
     test_lvl.cpp
     test_terrain.cpp
