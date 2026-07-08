@@ -56,6 +56,10 @@ public:
 private:
     bool init_packed(const std::filesystem::path& pack_dir);
 
+    // Unpacked mode: resolve a normalized (lowercase) game path to the on-disk file,
+    // matching each component case-insensitively. Empty path if no match.
+    std::filesystem::path resolve_unpacked(const std::string& normalized) const;
+
     struct PkHandle {
         std::vector<uint8_t> file_data;
         std::unique_ptr<PkArchive> archive;

@@ -94,12 +94,40 @@ bool Vfs::init_packed(const fs::path& pack_dir) {
     return !archives_.empty();
 }
 
+// Game paths are case-insensitive (the original client ran on case-insensitive NTFS, and
+// normalize_path lowercases for PK CRCs anyway), but an unpacked tree on a case-sensitive
+// filesystem preserves whatever casing the assets shipped with (e.g. res/maps/01_Live_Maps).
+// Walk the path one component at a time: take an exact match when present, otherwise scan the
+// directory for a case-insensitive one.
+fs::path Vfs::resolve_unpacked(const std::string& normalized) const {
+    fs::path current = root_;
+    for (const fs::path& component : fs::path(normalized)) {
+        fs::path exact = current / component;
+        if (fs::exists(exact)) {
+            current = std::move(exact);
+            continue;
+        }
+
+        std::error_code ec;
+        fs::path found;
+        for (const auto& entry : fs::directory_iterator(current, ec)) {
+            if (normalize_path(entry.path().filename().string()) == component.string()) {
+                found = entry.path();
+                break;
+            }
+        }
+        if (found.empty()) return {};
+        current = std::move(found);
+    }
+    return current;
+}
+
 std::optional<std::vector<uint8_t>> Vfs::read(const std::string& path) const {
     std::string normalized = normalize_path(path);
 
     if (mode_ == VfsMode::Unpacked) {
-        fs::path full = root_ / normalized;
-        if (!fs::exists(full)) return std::nullopt;
+        fs::path full = resolve_unpacked(normalized);
+        if (full.empty()) return std::nullopt;
         auto data = read_file_raw(full);
         if (data.empty()) return std::nullopt;
         return data;
@@ -122,7 +150,7 @@ bool Vfs::exists(const std::string& path) const {
     std::string normalized = normalize_path(path);
 
     if (mode_ == VfsMode::Unpacked) {
-        return fs::exists(root_ / normalized);
+        return !resolve_unpacked(normalized).empty();
     }
 
     uint32_t crc = path_crc(normalized);
