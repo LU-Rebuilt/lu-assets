@@ -1,7 +1,5 @@
 #include "netdevil/archive/pki/pki_reader.h"
 
-#include <algorithm>
-
 namespace lu::assets {
 
 PkiFile pki_parse(std::span<const uint8_t> data) {
@@ -27,10 +25,9 @@ PkiFile pki_parse(std::span<const uint8_t> data) {
     for (uint32_t i = 0; i < packCount; ++i) {
         uint32_t slen = read_u32();
         if (off + slen > size) return pki;
-        std::string name(reinterpret_cast<const char*>(d + off), slen);
+        // Verbatim (backslash separators) — see PkiFile::pack_path_normalized.
+        pki.pack_paths.emplace_back(reinterpret_cast<const char*>(d + off), slen);
         off += slen;
-        std::replace(name.begin(), name.end(), '\\', '/');
-        pki.pack_paths.push_back(std::move(name));
     }
 
     uint32_t entryCount = read_u32();
@@ -43,7 +40,7 @@ PkiFile pki_parse(std::span<const uint8_t> data) {
         e.lower_crc = static_cast<int32_t>(read_u32());
         e.upper_crc = static_cast<int32_t>(read_u32());
         e.pack_index = read_u32();
-        e.unknown = read_u32();
+        e.is_compressed_raw = read_u32();
         if (e.pack_index < pki.pack_paths.size()) {
             pki.crc_to_pack[e.crc] = e.pack_index;
         }

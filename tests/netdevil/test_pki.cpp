@@ -25,7 +25,7 @@ static std::vector<uint8_t> make_pki(uint32_t version, std::vector<std::string> 
         write_u32(0); // lower_crc
         write_u32(0); // upper_crc
         write_u32(pack_idx);
-        write_u32(0); // unknown
+        write_u32(0); // is_compressed (bool32)
     }
     return data;
 }
@@ -54,11 +54,13 @@ TEST(PKI, CrcToPackMapping) {
     EXPECT_EQ(pki.crc_to_pack[0xCAFEBABE], 1u);
 }
 
-TEST(PKI, BackslashNormalization) {
+TEST(PKI, PathsPreservedVerbatimWithNormalizedAccessor) {
     auto data = make_pki(3, {"client\\res\\pack\\primary.pk"}, {});
     auto pki = pki_parse({data.data(), data.size()});
     ASSERT_EQ(pki.pack_paths.size(), 1u);
-    EXPECT_EQ(pki.pack_paths[0], "client/res/pack/primary.pk");
+    // On-disk backslashes are preserved (byte-perfect round-trips); the helper normalizes.
+    EXPECT_EQ(pki.pack_paths[0], "client\\res\\pack\\primary.pk");
+    EXPECT_EQ(pki.pack_path_normalized(0), "client/res/pack/primary.pk");
 }
 
 TEST(PKI, InvalidVersion) {
@@ -73,4 +75,29 @@ TEST(PKI, TruncatedData) {
     auto pki = pki_parse({data, sizeof(data)});
     EXPECT_EQ(pki.version, 3u);
     EXPECT_TRUE(pki.pack_paths.empty());
+}
+
+// ---- Round-trip (pki_write) ----
+
+#include "netdevil/archive/pki/pki_writer.h"
+
+TEST(PKI, RoundTripByteIdentical) {
+    auto data = make_pki(3, {"client\\res\\pack\\primary.pk", "client\\res\\pack\\textures.pk"},
+                         {{0xDEADBEEF, 0}, {0xCAFEBABE, 1}});
+    auto pki = pki_parse({data.data(), data.size()});
+    auto out = pki_write(pki);
+    EXPECT_EQ(out, data);
+}
+
+TEST(PKI, IsCompressedReadsLowByteOnly) {
+    // The original packer leaves the upper 3 bytes of the bool32 uninitialized; only the
+    // low byte is meaningful, and the raw word must survive a round-trip.
+    auto data = make_pki(3, {"p.pk"}, {{0x11111111, 0}});
+    data[data.size() - 4] = 0x01; // low byte of is_compressed
+    data[data.size() - 1] = 0xAB; // garbage upper byte, as shipped files have
+    auto pki = pki_parse({data.data(), data.size()});
+    ASSERT_EQ(pki.entries.size(), 1u);
+    EXPECT_TRUE(pki.entries[0].is_compressed());
+    EXPECT_EQ(pki.entries[0].is_compressed_raw, 0xAB000001u);
+    EXPECT_EQ(pki_write(pki), data);
 }
