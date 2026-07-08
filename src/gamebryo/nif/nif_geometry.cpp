@@ -1,6 +1,187 @@
 #include "gamebryo/nif/nif_geometry.h"
 
+#include <cmath>
+#include <unordered_map>
+#include <unordered_set>
+
 namespace lu::assets {
+
+namespace {
+
+struct Transform {
+    Vec3 translation = {0, 0, 0};
+    Quat rotation = {0, 0, 0, 1};
+    float scale = 1.0f;
+};
+
+Vec3 rotate_vec(const Quat& q, const Vec3& v) {
+    Vec3 u{q.x, q.y, q.z};
+    float s = q.w;
+
+    Vec3 cross1{
+        u.y * v.z - u.z * v.y,
+        u.z * v.x - u.x * v.z,
+        u.x * v.y - u.y * v.x
+    };
+    Vec3 cross2{
+        u.y * cross1.z - u.z * cross1.y,
+        u.z * cross1.x - u.x * cross1.z,
+        u.x * cross1.y - u.y * cross1.x
+    };
+
+    return {
+        v.x + 2.0f * (s * cross1.x + cross2.x),
+        v.y + 2.0f * (s * cross1.y + cross2.y),
+        v.z + 2.0f * (s * cross1.z + cross2.z)
+    };
+}
+
+Vec3 transform_point(const Transform& t, const Vec3& v) {
+    Vec3 scaled{v.x * t.scale, v.y * t.scale, v.z * t.scale};
+    Vec3 rotated = rotate_vec(t.rotation, scaled);
+    return {
+        rotated.x + t.translation.x,
+        rotated.y + t.translation.y,
+        rotated.z + t.translation.z
+    };
+}
+
+Quat multiply_quat(const Quat& a, const Quat& b) {
+    return {
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+    };
+}
+
+Quat normalize_quat(const Quat& q) {
+    float len_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (len_sq <= 0.0f) return {0, 0, 0, 1};
+    float inv_len = 1.0f / std::sqrt(len_sq);
+    return {q.x * inv_len, q.y * inv_len, q.z * inv_len, q.w * inv_len};
+}
+
+Transform local_transform(const NifNode& node) {
+    Transform transform;
+    transform.translation = node.translation;
+    transform.rotation = normalize_quat(node.rotation);
+    transform.scale = node.scale;
+    return transform;
+}
+
+Transform compose_transform(const Transform& parent, const Transform& child) {
+    Transform out;
+    out.translation = transform_point(parent, child.translation);
+    out.rotation = normalize_quat(multiply_quat(parent.rotation, child.rotation));
+    out.scale = parent.scale * child.scale;
+    return out;
+}
+
+Transform compute_world_transform(
+    const NifNode& node,
+    const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
+    const std::unordered_map<uint32_t, uint32_t>& parent_by_block,
+    std::unordered_map<uint32_t, Transform>& world_by_block,
+    std::unordered_set<uint32_t>& visiting) {
+
+    auto cached = world_by_block.find(node.block_index);
+    if (cached != world_by_block.end()) return cached->second;
+
+    Transform local = local_transform(node);
+    if (!visiting.insert(node.block_index).second) {
+        return local;
+    }
+
+    Transform world = local;
+    auto parent_it = parent_by_block.find(node.block_index);
+    if (parent_it != parent_by_block.end() && parent_it->second != node.block_index) {
+        auto parent_node_it = node_by_block.find(parent_it->second);
+        if (parent_node_it != node_by_block.end()) {
+            Transform parent_world = compute_world_transform(
+                *parent_node_it->second, node_by_block, parent_by_block, world_by_block, visiting);
+            world = compose_transform(parent_world, local);
+        }
+    }
+
+    visiting.erase(node.block_index);
+    world_by_block[node.block_index] = world;
+    return world;
+}
+
+NifRenderMaterial default_material() {
+    NifRenderMaterial mat;
+    mat.name = "Default";
+    return mat;
+}
+
+template <typename T>
+const T* find_by_block(const std::unordered_map<uint32_t, const T*>& by_block, int32_t block) {
+    if (block < 0) return nullptr;
+    auto it = by_block.find(static_cast<uint32_t>(block));
+    return it == by_block.end() ? nullptr : it->second;
+}
+
+NifRenderMaterial build_material_for_node(
+    const NifNode& node,
+    const std::unordered_map<uint32_t, const NifMaterial*>& materials,
+    const std::unordered_map<uint32_t, const NifTexturingProperty*>& texturing_props,
+    const std::unordered_map<uint32_t, const NifTextureRef*>& textures,
+    const std::unordered_map<uint32_t, const NifAlphaProperty*>& alpha_props) {
+
+    NifRenderMaterial out = default_material();
+
+    const NifMaterial* src_mat = nullptr;
+    for (int32_t prop_ref : node.properties) {
+        if ((src_mat = find_by_block(materials, prop_ref)) != nullptr) break;
+    }
+
+    if (src_mat) {
+        out.name = src_mat->name.empty() ? "NIF Material" : src_mat->name;
+        out.ambient[0] = src_mat->ambient.x;
+        out.ambient[1] = src_mat->ambient.y;
+        out.ambient[2] = src_mat->ambient.z;
+        out.diffuse[0] = src_mat->diffuse.x;
+        out.diffuse[1] = src_mat->diffuse.y;
+        out.diffuse[2] = src_mat->diffuse.z;
+        out.diffuse[3] = src_mat->alpha;
+        out.specular[0] = src_mat->specular.x;
+        out.specular[1] = src_mat->specular.y;
+        out.specular[2] = src_mat->specular.z;
+        out.specular[3] = src_mat->glossiness;
+        out.emissive[0] = src_mat->emissive.x;
+        out.emissive[1] = src_mat->emissive.y;
+        out.emissive[2] = src_mat->emissive.z;
+    }
+
+    const NifTexturingProperty* tex_prop = nullptr;
+    for (int32_t prop_ref : node.properties) {
+        if ((tex_prop = find_by_block(texturing_props, prop_ref)) != nullptr) break;
+    }
+
+    if (tex_prop) {
+        const NifTextureRef* tex = find_by_block(textures, tex_prop->base_texture_source_ref);
+        if (tex) {
+            out.diffuse_texture = tex->filename;
+        }
+    }
+
+    const NifAlphaProperty* alpha = nullptr;
+    for (int32_t prop_ref : node.properties) {
+        if ((alpha = find_by_block(alpha_props, prop_ref)) != nullptr) break;
+    }
+    if (alpha) {
+        // Keep alpha as parsed property data. Renderers may combine this with
+        // texture format, material alpha, shader family, and pass policy.
+        out.has_alpha_property = true;
+        out.alpha_flags = alpha->flags;
+        out.alpha_threshold = alpha->threshold;
+    }
+
+    return out;
+}
+
+} // namespace
 
 NifExtractionResult extractNifGeometry(const NifFile& nif,
                                         float pos_x, float pos_y, float pos_z,
@@ -41,6 +222,117 @@ NifExtractionResult extractNifGeometry(const NifFile& nif,
         result.total_vertices += static_cast<uint32_t>(mesh.vertices.size());
         result.total_triangles += static_cast<uint32_t>(mesh.triangles.size());
         result.meshes.push_back(std::move(em));
+    }
+
+    return result;
+}
+
+NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
+    NifRenderExtractionResult result;
+
+    // Build block-index maps once so property and data refs can be resolved
+    // without changing the parsed NIF model or duplicating lookup loops in each
+    // viewer/importer.
+    std::unordered_map<uint32_t, const NifNode*> node_by_block;
+    for (const auto& node : nif.nodes) {
+        node_by_block[node.block_index] = &node;
+    }
+
+    std::unordered_map<uint32_t, uint32_t> parent_by_block;
+    for (const auto& node : nif.nodes) {
+        for (int32_t child_ref : node.children) {
+            if (child_ref < 0) continue;
+            uint32_t child_block = static_cast<uint32_t>(child_ref);
+            if (node_by_block.find(child_block) != node_by_block.end() &&
+                parent_by_block.find(child_block) == parent_by_block.end()) {
+                parent_by_block[child_block] = node.block_index;
+            }
+        }
+    }
+
+    std::unordered_map<uint32_t, const NifMesh*> mesh_by_block;
+    for (const auto& mesh : nif.meshes) {
+        mesh_by_block[mesh.block_index] = &mesh;
+    }
+
+    std::unordered_map<uint32_t, const NifMaterial*> material_by_block;
+    for (const auto& material : nif.materials) {
+        material_by_block[material.block_index] = &material;
+    }
+
+    std::unordered_map<uint32_t, const NifTexturingProperty*> texturing_by_block;
+    for (const auto& prop : nif.texturing_properties) {
+        texturing_by_block[prop.block_index] = &prop;
+    }
+
+    std::unordered_map<uint32_t, const NifTextureRef*> texture_by_block;
+    for (const auto& tex : nif.textures) {
+        texture_by_block[tex.block_index] = &tex;
+    }
+
+    std::unordered_map<uint32_t, const NifAlphaProperty*> alpha_by_block;
+    for (const auto& alpha : nif.alpha_properties) {
+        alpha_by_block[alpha.block_index] = &alpha;
+    }
+
+    std::unordered_map<uint32_t, Transform> world_by_block;
+
+    for (const auto& node : nif.nodes) {
+        // A renderable mesh is defined by a scene node referencing geometry.
+        // Loose geometry blocks are skipped on purpose; rendering them would
+        // mask missing/broken node refs and lose authored transforms/properties.
+        if (node.data_ref < 0) continue;
+        auto mesh_it = mesh_by_block.find(static_cast<uint32_t>(node.data_ref));
+        if (mesh_it == mesh_by_block.end()) continue;
+
+        const NifMesh& src = *mesh_it->second;
+        if (src.vertices.empty() || src.triangles.empty()) continue;
+
+        std::unordered_set<uint32_t> visiting;
+        Transform transform = compute_world_transform(
+            node, node_by_block, parent_by_block, world_by_block, visiting);
+
+        NifRenderMesh out;
+        out.name = node.name.empty() ? "NIF Mesh" : node.name;
+        out.source_mesh_block = src.block_index;
+        out.source_node_block = node.block_index;
+        out.material = build_material_for_node(
+            node, material_by_block, texturing_by_block, texture_by_block, alpha_by_block);
+
+        out.vertices.reserve(src.vertices.size());
+        for (const auto& v : src.vertices) {
+            NifRenderVertex rv;
+            Vec3 p = transform_point(transform, v.position);
+            Vec3 n = rotate_vec(transform.rotation, v.normal);
+
+            rv.position[0] = p.x;
+            rv.position[1] = p.y;
+            rv.position[2] = p.z;
+            rv.normal[0] = n.x;
+            rv.normal[1] = n.y;
+            rv.normal[2] = n.z;
+            rv.uv[0] = v.u;
+            rv.uv[1] = v.v;
+            rv.color[0] = v.r;
+            rv.color[1] = v.g;
+            rv.color[2] = v.b;
+            rv.color[3] = v.a;
+            out.vertices.push_back(rv);
+        }
+
+        out.indices.reserve(src.triangles.size() * 3);
+        for (const auto& tri : src.triangles) {
+            if (tri.a < src.vertices.size() && tri.b < src.vertices.size() &&
+                tri.c < src.vertices.size()) {
+                out.indices.push_back(tri.a);
+                out.indices.push_back(tri.b);
+                out.indices.push_back(tri.c);
+            }
+        }
+
+        result.total_vertices += static_cast<uint32_t>(out.vertices.size());
+        result.total_triangles += static_cast<uint32_t>(out.indices.size() / 3);
+        result.meshes.push_back(std::move(out));
     }
 
     return result;

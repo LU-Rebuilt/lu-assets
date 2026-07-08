@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "gamebryo/nif/nif_geometry.h"
 #include "gamebryo/nif/nif_reader.h"
 
 #include <cstring>
@@ -910,6 +911,103 @@ TEST(NIF, NifNodeNewFieldDefaults) {
     EXPECT_TRUE(node.material_name_indices.empty());
     EXPECT_TRUE(node.material_extra_data_refs.empty());
     EXPECT_EQ(node.active_material, -1);
+}
+
+TEST(NIF, RenderExtractionComposesParentTransforms) {
+    NifFile nif;
+
+    NifNode parent;
+    parent.name = "Parent";
+    parent.block_index = 0;
+    parent.translation = {10.0f, 0.0f, 0.0f};
+    parent.scale = 2.0f;
+    parent.children = {1};
+
+    NifNode child;
+    child.name = "ChildMesh";
+    child.type_name = "NiTriShape";
+    child.block_index = 1;
+    child.translation = {0.0f, 5.0f, 0.0f};
+    child.scale = 1.0f;
+    child.data_ref = 2;
+
+    NifMesh mesh;
+    mesh.block_index = 2;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {1.0f, 2.0f, 3.0f};
+    mesh.vertices[0].normal = {0.0f, 1.0f, 0.0f};
+    mesh.vertices[1].position = {2.0f, 2.0f, 3.0f};
+    mesh.vertices[1].normal = {0.0f, 1.0f, 0.0f};
+    mesh.vertices[2].position = {1.0f, 3.0f, 3.0f};
+    mesh.vertices[2].normal = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+
+    nif.nodes = {parent, child};
+    nif.meshes = {mesh};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    ASSERT_EQ(extracted.meshes[0].vertices.size(), 3u);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].vertices[0].position[0], 12.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].vertices[0].position[1], 14.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].vertices[0].position[2], 6.0f);
+    EXPECT_EQ(extracted.total_triangles, 1u);
+}
+
+TEST(NIF, RenderExtractionIgnoresOrphanMeshData) {
+    NifFile nif;
+
+    NifMesh mesh;
+    mesh.block_index = 2;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+    nif.meshes = {mesh};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    EXPECT_TRUE(extracted.meshes.empty());
+    EXPECT_EQ(extracted.total_vertices, 0u);
+    EXPECT_EQ(extracted.total_triangles, 0u);
+}
+
+TEST(NIF, RenderExtractionIncludesAlphaPropertyState) {
+    NifFile nif;
+
+    NifNode node;
+    node.name = "AlphaPropertyMesh";
+    node.block_index = 0;
+    node.data_ref = 1;
+    node.properties = {2, 3};
+
+    NifMesh mesh;
+    mesh.block_index = 1;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+
+    NifMaterial material;
+    material.block_index = 2;
+    material.alpha = 1.0f;
+
+    NifAlphaProperty alpha;
+    alpha.block_index = 3;
+    alpha.flags = 0x0001;
+    alpha.threshold = 0;
+
+    nif.nodes = {node};
+    nif.meshes = {mesh};
+    nif.materials = {material};
+    nif.alpha_properties = {alpha};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    EXPECT_TRUE(extracted.meshes[0].material.has_alpha_property);
+    EXPECT_EQ(extracted.meshes[0].material.alpha_flags, 0x0001u);
+    EXPECT_EQ(extracted.meshes[0].material.alpha_threshold, 0u);
 }
 
 // ---- Round-trip (nif_write) ----
