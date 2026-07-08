@@ -37,4 +37,32 @@ TgaImage tga_load(std::span<const uint8_t> data) {
     return image;
 }
 
+TgaFile tga_parse(std::span<const uint8_t> data) {
+    if (data.size() < 18) {
+        throw TgaError("TGA: file too small for 18-byte header");
+    }
+
+    auto u16 = [&](size_t off) -> uint16_t {
+        return static_cast<uint16_t>(data[off] | (data[off + 1] << 8));
+    };
+
+    TgaFile tga;
+    tga.id_length = data[0];
+    tga.color_map_type = data[1];
+    tga.image_type = data[2];
+    tga.color_map_first = u16(3);
+    tga.color_map_length = u16(5);
+    tga.color_map_depth = data[7];
+    tga.x_origin = u16(8);
+    tga.y_origin = u16(10);
+    tga.width = u16(12);
+    tga.height = u16(14);
+    tga.bits_per_pixel = data[16];
+    tga.descriptor = data[17];
+
+    tga.payload.assign(data.begin() + 18, data.end());
+    return tga;
+}
+
 } // namespace lu::assets
+

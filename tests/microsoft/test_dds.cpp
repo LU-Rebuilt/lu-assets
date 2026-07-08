@@ -136,3 +136,25 @@ TEST(DDS, MagicConstantValues) {
     EXPECT_EQ(FOURCC_DXT3, 0x33545844u);
     EXPECT_EQ(FOURCC_DXT5, 0x35545844u);
 }
+
+// ---- Round-trip (dds_write) ----
+
+#include "microsoft/dds/dds_writer.h"
+
+TEST(DDS, RoundTripByteIdentical) {
+    auto data = build_dds(256, 128, 5, DDPF_RGB | DDPF_ALPHAPIXELS, 0, 32);
+    // Give it a payload beyond the 128-byte preamble
+    for (int i = 0; i < 64; ++i) data.push_back(static_cast<uint8_t>(i));
+
+    auto dds = dds_parse_header(data);
+    std::span<const uint8_t> payload(data.data() + 128, data.size() - 128);
+    EXPECT_EQ(dds_write(dds, payload), data);
+}
+
+TEST(DDS, RoundTripPreservesReservedWords) {
+    auto data = build_dds(64, 64, 1, DDPF_FOURCC, FOURCC_DXT5);
+    data[32] = 0xAB; // inside reserved1[] — must survive verbatim
+    auto dds = dds_parse_header(data);
+    std::span<const uint8_t> payload(data.data() + 128, data.size() - 128);
+    EXPECT_EQ(dds_write(dds, payload), data);
+}
