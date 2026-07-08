@@ -71,6 +71,19 @@ struct TerrainChunk {
     std::vector<uint8_t> blend_map;     // DDS blend map for texture splatting
     std::vector<TerrainFlair> flairs;   // Decorations
     std::vector<uint8_t> scene_map;     // Per-texel scene ID (version >= 32)
+
+    // Version < 32 only: the color map exactly as stored on disk — width*width texels of
+    // BGRA. `color_map` above is the client's in-memory view (swizzled to RGBA and cropped
+    // to (width-1)^2, per RAWReadColorandLightMaps); this keeps the texels that crop
+    // discards so terrain_write can round-trip byte-identically.
+    std::vector<uint8_t> color_map_full;
+
+    // Trailing per-chunk mesh LOD section (present in all versions when vert_count > 0).
+    // Field names from the client's RAW reader RE: meshVertUsage, meshVertSize, meshTri.
+    uint32_t mesh_vert_count = 0;              // "vertSize" in the client
+    std::vector<uint16_t> mesh_vert_usage;     // [mesh_vert_count]
+    uint16_t mesh_vert_size[16] = {};          // per-LOD vertex counts
+    std::vector<uint16_t> mesh_tris[16];       // per-LOD triangle index lists
 };
 
 struct TerrainFile {

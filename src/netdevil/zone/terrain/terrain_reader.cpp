@@ -61,33 +61,28 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
         //   Also reads width*width entries but only stores (width-1)^2
         // version >= 32: stored as RGBA, direct read of colorMapRes^2 entries
         if (terrain.version < 32) {
-            // Read width*width entries (some are discarded per original client logic)
+            // Read width*width BGRA entries. Keep the on-disk bytes verbatim in
+            // color_map_full (for terrain_write round-trips), and build the client's
+            // in-memory view in color_map: swizzled to RGBA, cropped to (width-1)^2.
             size_t read_count = static_cast<size_t>(chunk.width) * chunk.width;
             size_t store_res = chunk.color_map_res; // width - 1
-            if (store_res > 0 && store_res <= 4096) {
-                chunk.color_map.resize(store_res * store_res * 4);
-                size_t store_idx = 0;
-                for (uint32_t y = 0; y < chunk.width; ++y) {
-                    for (uint32_t x = 0; x < chunk.width; ++x) {
-                        if (r.remaining() < 4) break;
-                        uint8_t b0 = r.read_u8(); // B
-                        uint8_t b1 = r.read_u8(); // G
-                        uint8_t b2 = r.read_u8(); // R
-                        uint8_t b3 = r.read_u8(); // A
-                        // Only store if within the (width-1)x(width-1) grid
-                        if (y < store_res && x < store_res) {
-                            chunk.color_map[store_idx + 0] = b2; // R
-                            chunk.color_map[store_idx + 1] = b1; // G
-                            chunk.color_map[store_idx + 2] = b0; // B
-                            chunk.color_map[store_idx + 3] = b3; // A
+            if (r.remaining() >= read_count * 4) {
+                auto raw = r.read_bytes(read_count * 4);
+                chunk.color_map_full.assign(raw.begin(), raw.end());
+                if (store_res > 0 && store_res <= 4096) {
+                    chunk.color_map.resize(store_res * store_res * 4);
+                    size_t store_idx = 0;
+                    for (uint32_t y = 0; y < store_res; ++y) {
+                        for (uint32_t x = 0; x < store_res; ++x) {
+                            size_t src = (static_cast<size_t>(y) * chunk.width + x) * 4;
+                            chunk.color_map[store_idx + 0] = chunk.color_map_full[src + 2]; // R
+                            chunk.color_map[store_idx + 1] = chunk.color_map_full[src + 1]; // G
+                            chunk.color_map[store_idx + 2] = chunk.color_map_full[src + 0]; // B
+                            chunk.color_map[store_idx + 3] = chunk.color_map_full[src + 3]; // A
                             store_idx += 4;
                         }
                     }
                 }
-            } else {
-                // Skip the data
-                size_t skip = read_count * 4;
-                if (r.remaining() >= skip) r.read_bytes(skip);
             }
         } else if (chunk.color_map_res > 0 && chunk.color_map_res <= 4096) {
             size_t cm_bytes = static_cast<size_t>(chunk.color_map_res) * chunk.color_map_res * 4;
@@ -170,20 +165,26 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
         // Mesh vertex/triangle data (present in all versions)
         // vertSize (u32) — if 0, no further mesh data
         if (r.remaining() >= 4) {
-            uint32_t vertSize = r.read_u32();
-            if (vertSize > 0 && vertSize < 1000000) {
+            chunk.mesh_vert_count = r.read_u32();
+            if (chunk.mesh_vert_count > 0 && chunk.mesh_vert_count < 1000000) {
                 // meshVertUsage[vertSize] (uint16 array)
-                size_t vBytes = static_cast<size_t>(vertSize) * 2;
-                if (r.remaining() >= vBytes) r.skip(vBytes);
+                chunk.mesh_vert_usage.reserve(chunk.mesh_vert_count);
+                for (uint32_t v = 0; v < chunk.mesh_vert_count && r.remaining() >= 2; ++v) {
+                    chunk.mesh_vert_usage.push_back(r.read_u16());
+                }
 
                 // meshVertSize[16] (always 16 uint16s)
-                if (r.remaining() >= 32) r.skip(32);
+                for (int mv = 0; mv < 16 && r.remaining() >= 2; ++mv) {
+                    chunk.mesh_vert_size[mv] = r.read_u16();
+                }
 
                 // meshTri[16] — each: triCount(u16) + triIndices[triCount](u16)
                 for (int mt = 0; mt < 16 && r.remaining() >= 2; mt++) {
                     uint16_t triCount = r.read_u16();
-                    size_t triBytes = static_cast<size_t>(triCount) * 2;
-                    if (r.remaining() >= triBytes) r.skip(triBytes);
+                    chunk.mesh_tris[mt].reserve(triCount);
+                    for (uint16_t t = 0; t < triCount && r.remaining() >= 2; ++t) {
+                        chunk.mesh_tris[mt].push_back(r.read_u16());
+                    }
                 }
             }
         }

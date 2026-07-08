@@ -73,6 +73,9 @@ std::vector<uint8_t> build_one_chunk_terrain() {
     // Flair count = 0
     b.u32(0);
 
+    // Mesh LOD section: vert count = 0 (present in all real files)
+    b.u32(0);
+
     return b.data;
 }
 
@@ -123,4 +126,29 @@ TEST(Terrain, HeightmapCornerValues) {
 TEST(Terrain, EmptyDataThrows) {
     std::vector<uint8_t> empty;
     EXPECT_THROW(terrain_parse(empty), std::out_of_range);
+}
+
+// ---- Round-trip (terrain_write) ----
+
+#include "netdevil/zone/terrain/terrain_writer.h"
+
+TEST(Terrain, RoundTripByteIdentical) {
+    auto data = build_one_chunk_terrain();
+    auto terrain = terrain_parse(data);
+    EXPECT_EQ(terrain_write(terrain), data);
+}
+
+TEST(Terrain, V31ColorMapFullPreservesCroppedTexels) {
+    // version < 32 stores width*width BGRA texels; the client's in-memory view crops to
+    // (width-1)^2 and swizzles to RGBA. color_map_full must keep every on-disk byte.
+    auto data = build_one_chunk_terrain();
+    auto terrain = terrain_parse(data);
+    ASSERT_EQ(terrain.chunks.size(), 1u);
+    const auto& chunk = terrain.chunks[0];
+    EXPECT_EQ(chunk.color_map_full.size(), 4u * 4u * 4u); // full width^2 grid
+    EXPECT_EQ(chunk.color_map.size(), 3u * 3u * 4u);      // cropped view
+    // Builder wrote BGRA {255,0,0,255} -> view is RGBA {0,0,255,255}
+    EXPECT_EQ(chunk.color_map_full[0], 255); // B on disk
+    EXPECT_EQ(chunk.color_map[0], 0);        // R in view
+    EXPECT_EQ(chunk.color_map[2], 255);      // B in view
 }
