@@ -156,6 +156,7 @@ struct NifTriangle {
 // Verified field order from Ghidra RE and NifSkope nifxml.
 struct NifMaterial {
     std::string name;
+    uint32_t block_index = 0;
     uint16_t flags = 0;                    // Material flags (u16 always)
     Vec3 ambient  = {0.7f, 0.7f, 0.7f};   // Ambient color
     Vec3 diffuse  = {0.7f, 0.7f, 0.7f};   // Diffuse color
@@ -182,6 +183,14 @@ struct NifTextureRef {
 struct NifTexturingProperty {
     uint32_t block_index = 0;
     int32_t base_texture_source_ref = -1; // block index of the base slot's NiSourceTexture, or -1
+};
+
+// NiAlphaProperty -- authored alpha state attached through NifNode::properties.
+// Renderers/tools can interpret these flags, but the parser only preserves them.
+struct NifAlphaProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 0;
+    uint8_t threshold = 0;
 };
 
 // Node in the scene hierarchy (NiNode, NiLODNode, NiTriShape, NiTriStrips).
@@ -419,6 +428,7 @@ struct NifFile {
     std::vector<NifMaterial> materials;
     std::vector<NifTextureRef> textures;
     std::vector<NifTexturingProperty> texturing_properties;
+    std::vector<NifAlphaProperty> alpha_properties;
 
     // Resolves a node's base-slot texture filename by walking node.properties[] ->
     // NiTexturingProperty (matched by block_index) -> base_texture_source_ref ->

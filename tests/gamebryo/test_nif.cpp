@@ -306,6 +306,7 @@ TEST(NIF, ParseNiMaterialProperty) {
     ASSERT_EQ(nif.materials.size(), 1u);
     const auto& mat = nif.materials[0];
     EXPECT_EQ(mat.name, "TestMaterial");
+    EXPECT_EQ(mat.block_index, 0u);
     EXPECT_EQ(mat.flags, 0u);  // No flags in version 20.3.0.9
     EXPECT_FLOAT_EQ(mat.ambient.x, 0.5f);
     EXPECT_FLOAT_EQ(mat.diffuse.x, 0.8f);
@@ -313,6 +314,25 @@ TEST(NIF, ParseNiMaterialProperty) {
     EXPECT_FLOAT_EQ(mat.emissive.x, 0.0f);
     EXPECT_FLOAT_EQ(mat.glossiness, 25.0f);
     EXPECT_FLOAT_EQ(mat.alpha, 0.9f);
+}
+
+TEST(NIF, ParseNiAlphaProperty) {
+    NifBuilder block;
+    write_ni_object_net(block, -1, -1);
+    block.u16(0x00ED);
+    block.u8(128);
+
+    NifBuilder b;
+    write_header(b, {}, {"NiAlphaProperty"}, {0},
+                 {static_cast<uint32_t>(block.data.size())});
+    b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0
+
+    auto nif = nif_parse(b.data);
+    ASSERT_EQ(nif.alpha_properties.size(), 1u);
+    EXPECT_EQ(nif.alpha_properties[0].flags, 0x00EDu);
+    EXPECT_EQ(nif.alpha_properties[0].threshold, 128u);
+    EXPECT_EQ(nif.alpha_properties[0].block_index, 0u);
 }
 
 TEST(NIF, StructDefaultValues) {

@@ -612,7 +612,7 @@ int32_t read_tex_desc_source_ref(BinaryReader& r, uint32_t version) {
 }
 
 NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
-                                               const std::vector<std::string>& string_table) {
+                                              const std::vector<std::string>& string_table) {
     NifTexturingProperty prop;
     auto net = read_ni_object_net(r, version, string_table);
     (void)net;
@@ -693,6 +693,28 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         }
     }
 
+    return prop;
+}
+
+// ============================================================================
+// NiAlphaProperty: authored alpha state.
+// Inherits NiProperty -> NiObjectNET. For LU's version, NiProperty itself adds
+// no fields; NiAlphaProperty stores flags plus an optional threshold byte.
+// ============================================================================
+
+NifAlphaProperty parse_alpha_property(BinaryReader& r, uint32_t version,
+                                      const std::vector<std::string>& string_table,
+                                      size_t block_end) {
+    NifAlphaProperty prop;
+    auto net = read_ni_object_net(r, version, string_table);
+    (void)net;
+
+    if (r.pos() + 2 <= block_end) {
+        prop.flags = r.read_u16();
+    }
+    if (r.pos() + 1 <= block_end) {
+        prop.threshold = r.read_u8();
+    }
     return prop;
 }
 
@@ -1151,6 +1173,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
             // NiMaterialProperty (material colors)
             else if (type_name == "NiMaterialProperty") {
                 NifMaterial mat = parse_material_property(r, nif.version, nif.string_table);
+                mat.block_index = block_idx;
                 nif.materials.push_back(std::move(mat));
             }
             // NiSourceTexture (texture file/pixel-data reference)
@@ -1165,6 +1188,13 @@ NifFile nif_parse(std::span<const uint8_t> data) {
                     parse_texturing_property(r, nif.version, nif.string_table);
                 prop.block_index = block_idx;
                 nif.texturing_properties.push_back(std::move(prop));
+            }
+            // NiAlphaProperty (alpha blend/test state)
+            else if (type_name == "NiAlphaProperty") {
+                NifAlphaProperty prop =
+                    parse_alpha_property(r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.alpha_properties.push_back(std::move(prop));
             }
             // ---- Animation blocks (found in .kf files) ----
             // NiControllerSequence (animation clip definition)
