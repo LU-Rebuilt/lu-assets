@@ -42,3 +42,17 @@ TEST(AUD, MissingRootElementThrows) {
     auto data = to_bytes(R"(<WrongElement musicCue="test" />)");
     EXPECT_THROW(aud_parse(data), AudError);
 }
+
+// ---- Round-trip (aud_write) ----
+
+#include "netdevil/zone/aud/aud_writer.h"
+
+TEST(AUD, RoundTripEmitsVerbatimBytes) {
+    // XML has no canonical byte form, so the round-trip path carries the source bytes
+    // verbatim (odd whitespace and attribute order included).
+    std::string xml = "<?xml version=\"1.0\" ?>\r\n<SceneAudioAttributes  musicCue=\"test\"   />\r\n";
+    std::vector<uint8_t> data(xml.begin(), xml.end());
+    auto aud = aud_parse(data);
+    EXPECT_EQ(aud_write(aud), data);
+    EXPECT_EQ(aud.music_cue, "test");
+}

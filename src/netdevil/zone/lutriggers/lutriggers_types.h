@@ -43,6 +43,12 @@ struct LuTrigger {
 };
 
 struct LuTriggersFile {
+    // The original file bytes, verbatim. XML formatting (whitespace, attribute order,
+    // quoting) has no canonical binary form, so byte-identical round-trips carry the
+    // source bytes; lutriggers_write emits these. Structured edits must regenerate the XML
+    // and cannot be byte-identical to the original file.
+    std::vector<uint8_t> raw;
+
     uint32_t next_id = 0;
     std::vector<LuTrigger> triggers;
 };

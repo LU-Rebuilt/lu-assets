@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 #include <stdexcept>
 
 namespace lu::assets {
@@ -21,6 +22,12 @@ struct AudError : std::runtime_error {
 };
 
 struct AudFile {
+    // The original file bytes, verbatim. XML formatting (whitespace, attribute order,
+    // quoting) has no canonical binary form, so byte-identical round-trips carry the
+    // source bytes; aud_write emits these. Structured edits must regenerate the XML
+    // and cannot be byte-identical to the original file.
+    std::vector<uint8_t> raw;
+
     std::string music_cue;
     std::string music_param_name;
     std::string guid_2d;

@@ -17,6 +17,7 @@ AudFile aud_parse(std::span<const uint8_t> data) {
     }
 
     AudFile aud;
+    aud.raw.assign(data.begin(), data.end());
     aud.music_cue = root.attribute("musicCue").as_string();
     aud.music_param_name = root.attribute("musicParamName").as_string();
     aud.guid_2d = root.attribute("guid2D").as_string();

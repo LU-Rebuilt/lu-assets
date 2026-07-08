@@ -17,6 +17,7 @@ LuTriggersFile lutriggers_parse(std::span<const uint8_t> data) {
     }
 
     LuTriggersFile file;
+    file.raw.assign(data.begin(), data.end());
     file.next_id = root.attribute("nextID").as_uint();
 
     for (auto trigger_node : root.children("trigger")) {
