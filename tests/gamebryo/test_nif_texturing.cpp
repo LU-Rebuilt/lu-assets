@@ -127,6 +127,7 @@ TEST(NifTexturing, DecalThresholdsUseVersion20_2_0_5Rule) {
     b.data.insert(b.data.end(), texBlock.data.begin(), texBlock.data.end());
     b.data.insert(b.data.end(), propBlock.data.begin(), propBlock.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
 
     ASSERT_EQ(nif.textures.size(), 1u);
@@ -196,6 +197,7 @@ TEST(NifTexturing, ResolveBaseTextureFilenameWalksFullChain) {
     b.data.insert(b.data.end(), propBlock.data.begin(), propBlock.data.end());
     b.data.insert(b.data.end(), triShapeBlock.data.begin(), triShapeBlock.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
 
     ASSERT_EQ(nif.nodes.size(), 1u);
@@ -229,6 +231,7 @@ TEST(NifTexturing, ResolveBaseTextureFilenameReturnsEmptyWhenNoTexturingProperty
     write_header(b, {}, {"NiTriShape"}, {0}, {triShapeBlockSize});
     b.data.insert(b.data.end(), triShapeBlock.data.begin(), triShapeBlock.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.nodes.size(), 1u);
     EXPECT_EQ(nif.ResolveBaseTextureFilename(nif.nodes[0]), "");
@@ -253,6 +256,7 @@ TEST(NifTexturing, InternalTextureHasNoFilename) {
     write_header(b, {}, {"NiSourceTexture"}, {0}, {texBlockSize});
     b.data.insert(b.data.end(), texBlock.data.begin(), texBlock.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.textures.size(), 1u);
     EXPECT_FALSE(nif.textures[0].use_external);

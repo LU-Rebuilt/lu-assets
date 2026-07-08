@@ -394,6 +394,25 @@ struct NifFile {
     // String table (populated from header, used to resolve string indices)
     std::vector<std::string> string_table;
 
+    // ---- Container preservation (byte-perfect round-trip through nif_write) ----
+    // Exact text header line including the trailing '\n' (e.g. "Gamebryo File Format,
+    // Version 20.3.0.9\n"). Written back verbatim rather than regenerated from `version`,
+    // since NetImmerse/Gamebryo spellings and formatting vary across exporters.
+    std::string header_line;
+    uint8_t endian = 1; // 1 = little-endian (the only value LU ships)
+    // "Max String Length" header field, preserved as read rather than recomputed: it's
+    // informational (a preallocation hint), and exporters don't reliably keep it equal to
+    // the actual max — recomputing would break byte-identical round-trips.
+    uint32_t string_table_max_len = 0;
+    std::vector<uint32_t> groups;
+    // Raw bytes of every block in file order, sliced via the header's block-size table
+    // (present since 20.2.0.7 — all LU-shipped versions). This is what nif_write emits, so
+    // block types without a dedicated parser/serializer still round-trip losslessly; the
+    // typed views below are parsed *from* these bytes.
+    std::vector<std::vector<uint8_t>> block_data;
+    // Footer: root-object refs (u32 count + Ref<NiObject>[count]).
+    std::vector<int32_t> roots;
+
     // Parsed data -- scene graph
     std::vector<NifNode> nodes;
     std::vector<NifMesh> meshes;

@@ -103,6 +103,7 @@ void write_header(NifBuilder& b,
 std::vector<uint8_t> build_minimal_nif() {
     NifBuilder b;
     write_header(b, {}, {}, {}, {});
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return b.data;
 }
 
@@ -149,6 +150,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_ninode_nif() {
     // Append block data
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -176,6 +178,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_ninode_with_children_nif() {
         {block_size});
 
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -209,6 +212,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_material_nif() {
         {block_size});
 
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -243,6 +247,7 @@ TEST(NIF, ParseMinimalNifZeroBlocks) {
 TEST(NIF, StringTablePopulated) {
     NifBuilder b;
     write_header(b, {"hello", "world", "test"}, {}, {}, {});
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
 
     ASSERT_EQ(nif.string_table.size(), 3u);
@@ -368,6 +373,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_text_key_extra_data_nif() {
         {block_size});                    // block sizes
 
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -408,6 +414,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_transform_interpolator_nif() {
         {block_size});                   // block sizes
 
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -463,6 +470,7 @@ std::pair<std::vector<uint8_t>, uint32_t> build_transform_data_nif() {
         {block_size});           // block sizes
 
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, block_size};
 }
 
@@ -520,6 +528,7 @@ std::pair<std::vector<uint8_t>, std::vector<uint32_t>> build_float_anim_nif() {
 
     b.data.insert(b.data.end(), block0.data.begin(), block0.data.end());
     b.data.insert(b.data.end(), block1.data.begin(), block1.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return {b.data, {sz0, sz1}};
 }
 
@@ -612,6 +621,7 @@ std::vector<uint8_t> build_kf_like_nif() {
     b.data.insert(b.data.end(), b1.data.begin(), b1.data.end());
     b.data.insert(b.data.end(), b2.data.begin(), b2.data.end());
     b.data.insert(b.data.end(), b3.data.begin(), b3.data.end());
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     return b.data;
 }
 
@@ -694,6 +704,7 @@ TEST(NIF, BlockSizeSafetyNet) {
     write_header(b, {"SafetyNode"}, {"NiNode"}, {0}, {padded_size});
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.nodes.size(), 1u);
     EXPECT_EQ(nif.nodes[0].name, "SafetyNode");
@@ -728,6 +739,7 @@ TEST(NIF, ExtraDataRefsStored) {
                  {static_cast<uint32_t>(block.data.size())});
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.nodes.size(), 1u);
     ASSERT_EQ(nif.nodes[0].extra_data_refs.size(), 2u);
@@ -751,6 +763,7 @@ TEST(NIF, EffectRefsStored) {
                  {static_cast<uint32_t>(block.data.size())});
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.nodes.size(), 1u);
     ASSERT_EQ(nif.nodes[0].effect_refs.size(), 3u);
@@ -788,6 +801,7 @@ TEST(NIF, MaterialRefsStored) {
                  {static_cast<uint32_t>(block.data.size())});
     b.data.insert(b.data.end(), block.data.begin(), block.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.nodes.size(), 1u);
     ASSERT_EQ(nif.nodes[0].material_name_indices.size(), 2u);
@@ -824,6 +838,7 @@ TEST(NIF, ExportInfoStored) {
     // Groups
     b.u32(0); // num_groups
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     EXPECT_EQ(nif.export_info[0], "TestApp");
     EXPECT_EQ(nif.export_info[1], "1.2.3");
@@ -851,6 +866,7 @@ TEST(NIF, QuadraticTranslationTangentsStored) {
                  {static_cast<uint32_t>(b3.data.size())});
     b.data.insert(b.data.end(), b3.data.begin(), b3.data.end());
 
+    b.u32(0); // footer: Num Roots = 0 (required by the container spec)
     auto nif = nif_parse(b.data);
     ASSERT_EQ(nif.transform_data.size(), 1u);
     const auto& td = nif.transform_data[0];
@@ -874,4 +890,36 @@ TEST(NIF, NifNodeNewFieldDefaults) {
     EXPECT_TRUE(node.material_name_indices.empty());
     EXPECT_TRUE(node.material_extra_data_refs.empty());
     EXPECT_EQ(node.active_material, -1);
+}
+
+// ---- Round-trip (nif_write) ----
+
+#include "gamebryo/nif/nif_writer.h"
+
+TEST(NIF, RoundTripMinimalByteIdentical) {
+    auto data = build_minimal_nif();
+    auto nif = nif_parse(data);
+    EXPECT_EQ(nif_write(nif), data);
+}
+
+TEST(NIF, RoundTripNiNodeByteIdentical) {
+    auto [data, block_size] = build_ninode_nif();
+    auto nif = nif_parse(data);
+    ASSERT_EQ(nif.block_data.size(), 1u);
+    EXPECT_EQ(nif.block_data[0].size(), block_size);
+    EXPECT_EQ(nif_write(nif), data);
+}
+
+TEST(NIF, RoundTripPreservesContainerFields) {
+    auto [data, block_size] = build_ninode_nif();
+    (void)block_size;
+    auto nif = nif_parse(data);
+    EXPECT_EQ(nif.header_line, "Gamebryo File Format, Version 20.3.0.9\n");
+    EXPECT_EQ(nif.endian, 1);
+    EXPECT_TRUE(nif.roots.empty()); // test fixtures write Num Roots = 0
+    // A parse of the writer's output must equal a parse of the original.
+    auto reparsed = nif_parse(nif_write(nif));
+    EXPECT_EQ(reparsed.block_types, nif.block_types);
+    EXPECT_EQ(reparsed.string_table, nif.string_table);
+    EXPECT_EQ(reparsed.block_data, nif.block_data);
 }

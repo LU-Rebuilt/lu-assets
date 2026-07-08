@@ -1010,12 +1010,13 @@ NifFile nif_parse(std::span<const uint8_t> data) {
     NifFile nif;
 
     size_t pos = find_header_end(data);
+    nif.header_line.assign(reinterpret_cast<const char*>(data.data()), pos);
     BinaryReader r(data);
     r.seek(pos);
 
     // Binary header
     nif.version = r.read_u32();
-    r.read_u8(); // endian flag (1 = little-endian)
+    nif.endian = r.read_u8(); // endian flag (1 = little-endian)
 
     nif.user_version = r.read_u32();
     nif.num_blocks = r.read_u32();
@@ -1067,7 +1068,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
 
     // String table: u32 count, u32 max_length, then u32-length-prefixed strings
     uint32_t num_strings = r.read_u32();
-    r.read_u32(); // max string length (informational)
+    nif.string_table_max_len = r.read_u32(); // max string length (informational, preserved)
     nif.string_table.resize(num_strings);
     for (uint32_t i = 0; i < num_strings; ++i) {
         uint32_t len = r.read_u32();
@@ -1085,8 +1086,9 @@ NifFile nif_parse(std::span<const uint8_t> data) {
 
     // Groups: u32 count, then u32[count] group sizes
     uint32_t num_groups = r.read_u32();
+    nif.groups.resize(num_groups);
     for (uint32_t i = 0; i < num_groups; ++i) {
-        r.read_u32(); // group size
+        nif.groups[i] = r.read_u32();
     }
 
     // ========================================================================
@@ -1094,10 +1096,21 @@ NifFile nif_parse(std::span<const uint8_t> data) {
     // Even if a block parser reads the wrong number of bytes, we ALWAYS seek
     // to block_start + block_size before processing the next block.
     // ========================================================================
+    if (!nif.block_sizes.empty()) {
+        nif.block_data.reserve(nif.num_blocks);
+    }
     for (uint32_t block_idx = 0; block_idx < nif.num_blocks; ++block_idx) {
         size_t block_start = r.pos();
         uint32_t block_size = block_idx < nif.block_sizes.size() ? nif.block_sizes[block_idx] : 0;
         size_t block_end = block_start + block_size;
+
+        // Preserve the block's raw bytes (byte-perfect round-trip via nif_write, and
+        // lossless carry-through for block types without a dedicated parser). Indexed 1:1
+        // with block_type_indices, so push unconditionally when the size table exists.
+        if (block_idx < nif.block_sizes.size()) {
+            if (block_end > data.size()) throw NifError("NIF: block extends past end of file");
+            nif.block_data.emplace_back(data.begin() + block_start, data.begin() + block_end);
+        }
 
         uint16_t type_idx = nif.block_type_indices[block_idx];
         const std::string& type_name = (type_idx < nif.block_types.size())
@@ -1198,6 +1211,19 @@ NifFile nif_parse(std::span<const uint8_t> data) {
         // This prevents cascading failures from one bad block.
         if (block_size > 0) {
             r.seek(block_end);
+        }
+    }
+
+    // Footer (nif.xml niobject Footer): Num Roots (uint) + Roots (Ref<NiObject>[Num Roots]).
+    // Only reachable reliably when the block-size table positioned us past the last block —
+    // without it (pre-20.2.0.7, never shipped by LU) the stream position after the loop is
+    // wherever the last typed parser stopped, so don't misread arbitrary bytes as roots.
+    if (!nif.block_sizes.empty()) {
+        uint32_t num_roots = r.read_u32();
+        if (num_roots > nif.num_blocks) throw NifError("NIF: unreasonable footer root count");
+        nif.roots.resize(num_roots);
+        for (uint32_t i = 0; i < num_roots; ++i) {
+            nif.roots[i] = r.read_s32();
         }
     }
 
