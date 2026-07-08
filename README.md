@@ -17,7 +17,7 @@ Part of the [LU-Rebuilt](https://github.com/LU-Rebuilt) project.
 | **Gamebryo Engine** | NIF/KF meshes & animation, KFM animation manager, .settings |
 | **Havok Physics** | HKX binary & XML packfiles (rigid bodies, shapes, scene data) |
 | **LEGO** | LXFML brick models, .g geometry, brick assembly & colors |
-| **Microsoft** | DDS textures, TGA images, FXO shaders |
+| **Microsoft** | DDS textures, TGA images |
 | **FMOD Audio** | FEV events, FSB sound banks |
 | **ForkParticle** | PSB particle systems |
 | **Scaleform** | GFX UI files |

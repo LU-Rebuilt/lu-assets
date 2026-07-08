@@ -17,7 +17,6 @@
 #include "lego/brick_geometry/brick_geometry.h"
 #include "microsoft/dds/dds_reader.h"
 #include "microsoft/tga/tga_reader.h"
-#include "microsoft/fxo/fxo_reader.h"
 #include "forkparticle/psb/psb_reader.h"
 #include "fmod/fev/fev_reader.h"
 #include "fmod/fsb/fsb_reader.h"
@@ -169,8 +168,6 @@ int main(int argc, char* argv[]) {
     report(".tga", test_format(BASE + "/mesh", ".tga",
         [](auto& d) { lu::assets::tga_load(d); }));
 
-    report(".fxo", test_format(BASE + "/shaders", ".fxo",
-        [](auto& d) { lu::assets::fxo_parse(d); }));
 
     // ForkParticle
     report(".psb", test_format(BASE + "/forkp", ".psb",

@@ -10,6 +10,6 @@ Format parsers for the LEGO Universe game client, organized by engine/vendor:
 | [lego/](lego/) | LEGO Group | LXFML brick models, brick geometry, brick assembly/colors |
 | [fmod/](fmod/) | FMOD (audio engine) | FEV events, FSB sound banks |
 | [forkparticle/](forkparticle/) | ForkParticle (particle engine) | PSB emitter definitions, effect files |
-| [microsoft/](microsoft/) | Microsoft/DirectX | DDS textures, TGA images, FXO compiled shaders |
+| [microsoft/](microsoft/) | Microsoft/DirectX | DDS textures, TGA images |
 | [scaleform/](scaleform/) | Scaleform (UI engine) | GFX modified SWF files |
 | [common/](common/) | Shared utilities | Binary reader, primitive geometry generation |
