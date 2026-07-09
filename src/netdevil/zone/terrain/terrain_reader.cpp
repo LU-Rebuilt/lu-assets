@@ -93,7 +93,9 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
         }
 
         // Light map: u32 size + raw data (baked lighting)
-        if (r.remaining() >= 4) {
+        // Light map: only present for version >= 32 (RAWReadColorandLightMaps gates the
+        // whole size+data read on `31 < version`; Ghidra RE of legouniverse.exe 1.10.64).
+        if (terrain.version >= 32 && r.remaining() >= 4) {
             uint32_t lm_size = r.read_u32();
             if (lm_size > 0 && lm_size <= 64 * 1024 * 1024 && r.remaining() >= lm_size) {
                 auto lm = r.read_bytes(lm_size);
@@ -101,34 +103,48 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
             }
         }
 
-        // Version >= 32: additional texture data
-        if (terrain.version >= 32 && r.remaining() >= 4) {
-            // Texture map: per-texel texture selection
+        // Texture map: present for every version (RAWReadChunk's next call, sub_0103aaf0 in
+        // Ghidra). v<32 uses the same width*width-read/(width-1)^2-store BGRA swizzle as the
+        // color map, with no on-disk resolution field of its own — texturemapsize IS the
+        // read/store width directly (unlike color_map_res, there's no -1 crop here).
+        if (r.remaining() >= 4) {
             chunk.tex_map_res = r.read_u32();
             if (chunk.tex_map_res > 0 && chunk.tex_map_res <= 4096) {
                 size_t tex_bytes = static_cast<size_t>(chunk.tex_map_res) * chunk.tex_map_res * 4;
                 if (r.remaining() >= tex_bytes) {
-                    auto tm = r.read_bytes(tex_bytes);
-                    chunk.texture_map.assign(tm.begin(), tm.end());
+                    if (terrain.version < 32) {
+                        auto raw = r.read_bytes(tex_bytes);
+                        chunk.texture_map.resize(tex_bytes);
+                        for (size_t i = 0; i + 3 < tex_bytes; i += 4) {
+                            chunk.texture_map[i + 0] = raw[i + 2]; // R
+                            chunk.texture_map[i + 1] = raw[i + 1]; // G
+                            chunk.texture_map[i + 2] = raw[i + 0]; // B
+                            chunk.texture_map[i + 3] = raw[i + 3]; // A
+                        }
+                    } else {
+                        auto tm = r.read_bytes(tex_bytes);
+                        chunk.texture_map.assign(tm.begin(), tm.end());
+                    }
                 }
             }
 
-            // Texture settings flags
-            if (r.remaining() >= 1) {
-                chunk.texture_settings = r.read_u8();
-            }
-
-            // Blend map: DDS-format texture for terrain layer blending
-            if (r.remaining() >= 4) {
-                uint32_t blend_size = r.read_u32();
-                if (blend_size > 0 && r.remaining() >= blend_size) {
-                    auto bm = r.read_bytes(blend_size);
-                    chunk.blend_map.assign(bm.begin(), bm.end());
+            // Texture settings byte + blend map: version >= 32 only (sub_0103aaf0's `else`
+            // branch on `version < 0x20`; v<32 has neither field on disk at all).
+            if (terrain.version >= 32) {
+                if (r.remaining() >= 1) {
+                    chunk.texture_settings = r.read_u8();
+                }
+                if (r.remaining() >= 4) {
+                    uint32_t blend_size = r.read_u32();
+                    if (blend_size > 0 && r.remaining() >= blend_size) {
+                        auto bm = r.read_bytes(blend_size);
+                        chunk.blend_map.assign(bm.begin(), bm.end());
+                    }
                 }
             }
         }
 
-        // Flairs: terrain decoration objects
+        // Flairs: terrain decoration objects (RAWReadFlairData, present in all versions).
         if (r.remaining() >= 4) {
             uint32_t flair_count = r.read_u32();
             if (flair_count <= 100000) {
@@ -153,8 +169,38 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
             }
         }
 
-        // Scene map: per-texel scene ID assignment (version >= 32)
-        if (terrain.version >= 32 && chunk.color_map_res > 0) {
+        // Scene map: per-texel scene ID (RAWReadSceneMap). Every version has a real byte
+        // (or grid of bytes) on disk here — nothing is ever skipped/junk on the file side,
+        // only the client's in-memory scene_map differs in size/content from what's
+        // stored. Three version bands (all preserved verbatim, see TerrainChunk fields):
+        //   version < 31:  ONE real on-disk byte per chunk (pre-per-texel-map era); the
+        //                   client reads it, discards it, and builds its own zeroed
+        //                   (colorMapRes+1)^2 in-memory map instead of using it.
+        //   version == 31: (colorMapRes+1)^2 real bytes on disk; the client's in-memory
+        //                   view keeps only the inner colorMapRes^2 (border row/col
+        //                   cropped, same pattern as the color map).
+        //   version >= 32: colorMapRes^2 bytes on disk, matching the in-memory view
+        //                   exactly (no crop).
+        if (terrain.version < 31) {
+            if (r.remaining() >= 1) chunk.scene_map_skip_byte = r.read_u8();
+        } else if (terrain.version == 31) {
+            uint32_t res = chunk.color_map_res;
+            uint32_t full = res + 1;
+            size_t full_bytes = static_cast<size_t>(full) * full;
+            if (r.remaining() >= full_bytes) {
+                auto raw = r.read_bytes(full_bytes);
+                chunk.scene_map_full.assign(raw.begin(), raw.end());
+                chunk.scene_map.reserve(static_cast<size_t>(res) * res);
+                for (uint32_t y = 0; y < full; ++y) {
+                    for (uint32_t x = 0; x < full; ++x) {
+                        if (y < res && x < res) {
+                            chunk.scene_map.push_back(chunk.scene_map_full[
+                                static_cast<size_t>(y) * full + x]);
+                        }
+                    }
+                }
+            }
+        } else if (chunk.color_map_res > 0) {
             size_t sm_bytes = static_cast<size_t>(chunk.color_map_res) * chunk.color_map_res;
             if (r.remaining() >= sm_bytes) {
                 auto sm = r.read_bytes(sm_bytes);
@@ -162,9 +208,9 @@ TerrainFile terrain_parse(std::span<const uint8_t> data) {
             }
         }
 
-        // Mesh vertex/triangle data (present in all versions)
-        // vertSize (u32) — if 0, no further mesh data
-        if (r.remaining() >= 4) {
+        // Mesh vertex/triangle data: version >= 32 only (RAWReadMeshData gates the entire
+        // section on `31 < version`; v<32 files have no mesh section on disk whatsoever).
+        if (terrain.version >= 32 && r.remaining() >= 4) {
             chunk.mesh_vert_count = r.read_u32();
             if (chunk.mesh_vert_count > 0 && chunk.mesh_vert_count < 1000000) {
                 // meshVertUsage[vertSize] (uint16 array)
