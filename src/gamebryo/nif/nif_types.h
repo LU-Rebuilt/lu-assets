@@ -183,10 +183,20 @@ struct NifTextureRef {
 struct NifTexturingProperty {
     uint32_t block_index = 0;
     int32_t base_texture_source_ref = -1; // block index of the base slot's NiSourceTexture, or -1
+    bool base_texture_has_clamp_mode = false;
+    uint8_t base_texture_clamp_mode = 3; // TexClampMode: 3 = wrap U and V.
     int32_t dark_texture_source_ref = -1;
+    bool dark_texture_has_clamp_mode = false;
+    uint8_t dark_texture_clamp_mode = 3;
     int32_t detail_texture_source_ref = -1;
+    bool detail_texture_has_clamp_mode = false;
+    uint8_t detail_texture_clamp_mode = 3;
     int32_t gloss_texture_source_ref = -1;
+    bool gloss_texture_has_clamp_mode = false;
+    uint8_t gloss_texture_clamp_mode = 3;
     int32_t glow_texture_source_ref = -1;
+    bool glow_texture_has_clamp_mode = false;
+    uint8_t glow_texture_clamp_mode = 3;
 };
 
 // NiAlphaProperty -- authored alpha state attached through NifNode::properties.

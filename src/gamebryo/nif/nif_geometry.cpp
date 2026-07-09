@@ -178,10 +178,20 @@ NifRenderMaterial build_material_for_node(
 
     if (tex_prop) {
         out.diffuse_texture = texture_filename(textures, tex_prop->base_texture_source_ref);
+        out.diffuse_texture_has_clamp_mode = tex_prop->base_texture_has_clamp_mode;
+        out.diffuse_texture_clamp_mode = tex_prop->base_texture_clamp_mode;
         out.dark_texture = texture_filename(textures, tex_prop->dark_texture_source_ref);
+        out.dark_texture_has_clamp_mode = tex_prop->dark_texture_has_clamp_mode;
+        out.dark_texture_clamp_mode = tex_prop->dark_texture_clamp_mode;
         out.detail_texture = texture_filename(textures, tex_prop->detail_texture_source_ref);
+        out.detail_texture_has_clamp_mode = tex_prop->detail_texture_has_clamp_mode;
+        out.detail_texture_clamp_mode = tex_prop->detail_texture_clamp_mode;
         out.gloss_texture = texture_filename(textures, tex_prop->gloss_texture_source_ref);
+        out.gloss_texture_has_clamp_mode = tex_prop->gloss_texture_has_clamp_mode;
+        out.gloss_texture_clamp_mode = tex_prop->gloss_texture_clamp_mode;
         out.glow_texture = texture_filename(textures, tex_prop->glow_texture_source_ref);
+        out.glow_texture_has_clamp_mode = tex_prop->glow_texture_has_clamp_mode;
+        out.glow_texture_clamp_mode = tex_prop->glow_texture_clamp_mode;
     }
 
     const NifAlphaProperty* alpha = nullptr;

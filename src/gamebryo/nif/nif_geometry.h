@@ -52,12 +52,22 @@ struct NifRenderMaterial {
     float specular[4] = {0.0f, 0.0f, 0.0f, 10.0f};
     float emissive[3] = {0.0f, 0.0f, 0.0f};
     std::string diffuse_texture;
+    bool diffuse_texture_has_clamp_mode = false;
+    uint8_t diffuse_texture_clamp_mode = 3;
     // Additional NiTexturingProperty texture slots. These are authored asset
     // references only; shader-specific meaning remains the consumer's job.
     std::string dark_texture;
+    bool dark_texture_has_clamp_mode = false;
+    uint8_t dark_texture_clamp_mode = 3;
     std::string detail_texture;
+    bool detail_texture_has_clamp_mode = false;
+    uint8_t detail_texture_clamp_mode = 3;
     std::string gloss_texture;
+    bool gloss_texture_has_clamp_mode = false;
+    uint8_t gloss_texture_clamp_mode = 3;
     std::string glow_texture;
+    bool glow_texture_has_clamp_mode = false;
+    uint8_t glow_texture_clamp_mode = 3;
     // Raw NiAlphaProperty state. Consumers decide how these bits map to a
     // render API's blend/test state; this parser only preserves authored data.
     bool has_alpha_property = false;

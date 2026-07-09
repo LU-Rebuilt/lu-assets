@@ -692,13 +692,24 @@ NifTextureRef parse_source_texture(BinaryReader& r, uint32_t version,
 //     Transform Method: TransformMethod (u32).
 // ============================================================================
 
-int32_t read_tex_desc_source_ref(BinaryReader& r, uint32_t version) {
-    int32_t sourceRef = r.read_s32(); // Source: Ref<NiSourceTexture>
+struct TexDescInfo {
+    int32_t source_ref = -1;
+    bool has_clamp_mode = false;
+    uint8_t clamp_mode = 3;
+};
+
+TexDescInfo read_tex_desc(BinaryReader& r, uint32_t version) {
+    TexDescInfo desc;
+    desc.source_ref = r.read_s32(); // Source: Ref<NiSourceTexture>
 
     if (version >= 0x14010003) { // since="20.1.0.3"
-        r.read_u16(); // Flags (packed clamp+filter mode), TexturingMapFlags
+        uint16_t flags = r.read_u16(); // TexturingMapFlags: low two bits are TexClampMode.
+        desc.has_clamp_mode = true;
+        desc.clamp_mode = static_cast<uint8_t>(flags & 0x0003u);
     } else {
-        r.read_u32(); // Clamp Mode
+        uint32_t clamp_mode = r.read_u32(); // Clamp Mode
+        desc.has_clamp_mode = true;
+        desc.clamp_mode = static_cast<uint8_t>(clamp_mode & 0x00000003u);
         r.read_u32(); // Filter Mode
         if (version >= 0x0A010000 && version < 0x14010003) {
             r.read_u32(); // UV Set (removed at 20.1.0.3+)
@@ -719,7 +730,7 @@ int32_t read_tex_desc_source_ref(BinaryReader& r, uint32_t version) {
             r.read_f32(); r.read_f32(); // Center (TexCoord)
         }
     }
-    return sourceRef;
+    return desc;
 }
 
 NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
@@ -742,25 +753,48 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
 
     bool hasBase = r.read_bool();
     if (hasBase) {
-        prop.base_texture_source_ref = read_tex_desc_source_ref(r, version);
+        TexDescInfo desc = read_tex_desc(r, version);
+        prop.base_texture_source_ref = desc.source_ref;
+        prop.base_texture_has_clamp_mode = desc.has_clamp_mode;
+        prop.base_texture_clamp_mode = desc.clamp_mode;
     }
 
     bool hasDark = r.read_bool();
-    if (hasDark) prop.dark_texture_source_ref = read_tex_desc_source_ref(r, version);
+    if (hasDark) {
+        TexDescInfo desc = read_tex_desc(r, version);
+        prop.dark_texture_source_ref = desc.source_ref;
+        prop.dark_texture_has_clamp_mode = desc.has_clamp_mode;
+        prop.dark_texture_clamp_mode = desc.clamp_mode;
+    }
 
     bool hasDetail = r.read_bool();
-    if (hasDetail) prop.detail_texture_source_ref = read_tex_desc_source_ref(r, version);
+    if (hasDetail) {
+        TexDescInfo desc = read_tex_desc(r, version);
+        prop.detail_texture_source_ref = desc.source_ref;
+        prop.detail_texture_has_clamp_mode = desc.has_clamp_mode;
+        prop.detail_texture_clamp_mode = desc.clamp_mode;
+    }
 
     bool hasGloss = r.read_bool();
-    if (hasGloss) prop.gloss_texture_source_ref = read_tex_desc_source_ref(r, version);
+    if (hasGloss) {
+        TexDescInfo desc = read_tex_desc(r, version);
+        prop.gloss_texture_source_ref = desc.source_ref;
+        prop.gloss_texture_has_clamp_mode = desc.has_clamp_mode;
+        prop.gloss_texture_clamp_mode = desc.clamp_mode;
+    }
 
     bool hasGlow = r.read_bool();
-    if (hasGlow) prop.glow_texture_source_ref = read_tex_desc_source_ref(r, version);
+    if (hasGlow) {
+        TexDescInfo desc = read_tex_desc(r, version);
+        prop.glow_texture_source_ref = desc.source_ref;
+        prop.glow_texture_has_clamp_mode = desc.has_clamp_mode;
+        prop.glow_texture_clamp_mode = desc.clamp_mode;
+    }
 
     if (textureCount > 5) {
         bool hasBump = r.read_bool();
         if (hasBump) {
-            read_tex_desc_source_ref(r, version);
+            read_tex_desc(r, version);
             r.read_f32(); // Bump Map Luma Scale
             r.read_f32(); // Bump Map Luma Offset
             r.read_f32(); r.read_f32(); r.read_f32(); r.read_f32(); // Bump Map Matrix (2x2)
@@ -770,12 +804,12 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
     if (version >= 0x14020005) { // since="20.2.0.5"
         if (textureCount > 6) {
             bool hasNormal = r.read_bool();
-            if (hasNormal) read_tex_desc_source_ref(r, version);
+            if (hasNormal) read_tex_desc(r, version);
         }
         if (textureCount > 7) {
             bool hasParallax = r.read_bool();
             if (hasParallax) {
-                read_tex_desc_source_ref(r, version);
+                read_tex_desc(r, version);
                 r.read_f32(); // Parallax Offset
             }
         }
@@ -790,7 +824,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         uint32_t threshold = decalBase + static_cast<uint32_t>(decalIdx);
         if (textureCount <= threshold) break; // nif.xml conditions are strictly increasing
         bool hasDecal = r.read_bool();
-        if (hasDecal) read_tex_desc_source_ref(r, version);
+        if (hasDecal) read_tex_desc(r, version);
     }
 
     if (version >= 0x0A000100) { // "Num Shader Textures" since 10.0.1.0, unconditional
@@ -798,7 +832,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         for (uint32_t i = 0; i < numShaderTex; ++i) {
             bool hasMap = r.read_bool();
             if (hasMap) {
-                read_tex_desc_source_ref(r, version);
+                read_tex_desc(r, version);
                 r.read_u32(); // Map ID
             }
         }

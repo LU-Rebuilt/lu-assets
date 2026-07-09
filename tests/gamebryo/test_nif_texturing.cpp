@@ -78,9 +78,9 @@ void write_source_texture_body(NifBuilder& b, int32_t filenameStringIdx) {
 }
 
 // Writes a TexDesc (version 20.3.0.9: Source ref + packed Flags(u16) + optional transform).
-void write_tex_desc(NifBuilder& b, int32_t sourceRef) {
+void write_tex_desc(NifBuilder& b, int32_t sourceRef, uint16_t flags = 0) {
     b.s32(sourceRef);
-    b.u16(0);  // Flags (packed clamp+filter)
+    b.u16(flags);  // Flags (packed clamp+filter)
     b.u8(0);   // Has Texture Transform = false
 }
 
@@ -137,6 +137,45 @@ TEST(NifTexturing, DecalThresholdsUseVersion20_2_0_5Rule) {
     ASSERT_EQ(nif.texturing_properties.size(), 1u);
     EXPECT_EQ(nif.texturing_properties[0].base_texture_source_ref, 0);
     EXPECT_EQ(nif.texturing_properties[0].dark_texture_source_ref, 0);
+}
+
+TEST(NifTexturing, TexDescFlagsExposeClampMode) {
+    NifBuilder texBlock;
+    write_source_texture_body(texBlock, 0);
+    uint32_t texBlockSize = static_cast<uint32_t>(texBlock.data.size());
+
+    NifBuilder propBlock;
+    write_ni_object_net(propBlock, -1, -1);
+    propBlock.u16(0);
+    propBlock.u32(2);
+    propBlock.u8(1);
+    write_tex_desc(propBlock, 0, 3); // Wrap S, wrap T.
+    propBlock.u8(1);
+    write_tex_desc(propBlock, 0, 1); // Clamp S, wrap T.
+    propBlock.u8(0);
+    propBlock.u8(0);
+    propBlock.u8(0);
+    propBlock.u32(0);
+    uint32_t propBlockSize = static_cast<uint32_t>(propBlock.data.size());
+
+    NifBuilder b;
+    write_header(b,
+        {"AddressedTexture.dds"},
+        {"NiSourceTexture", "NiTexturingProperty"},
+        {0, 1},
+        {texBlockSize, propBlockSize});
+    b.data.insert(b.data.end(), texBlock.data.begin(), texBlock.data.end());
+    b.data.insert(b.data.end(), propBlock.data.begin(), propBlock.data.end());
+
+    b.u32(0);
+    auto nif = nif_parse(b.data);
+
+    ASSERT_EQ(nif.texturing_properties.size(), 1u);
+    const auto& prop = nif.texturing_properties[0];
+    EXPECT_TRUE(prop.base_texture_has_clamp_mode);
+    EXPECT_EQ(prop.base_texture_clamp_mode, 3);
+    EXPECT_TRUE(prop.dark_texture_has_clamp_mode);
+    EXPECT_EQ(prop.dark_texture_clamp_mode, 1);
 }
 
 // ResolveBaseTextureFilename walks node.properties[] -> NiTexturingProperty (by block_index) ->
