@@ -84,6 +84,17 @@ void write_tex_desc(NifBuilder& b, int32_t sourceRef, uint16_t flags = 0) {
     b.u8(0);   // Has Texture Transform = false
 }
 
+void write_tex_desc_transform(NifBuilder& b, int32_t sourceRef, uint16_t flags = 0) {
+    b.s32(sourceRef);
+    b.u16(flags);  // Flags (packed clamp+filter)
+    b.u8(1);       // Has Texture Transform = true
+    b.f32(0.25f); b.f32(-0.5f); // Translation
+    b.f32(2.0f); b.f32(0.5f);   // Scale
+    b.f32(0.75f);                // Rotation
+    b.u32(1);                    // Transform Method
+    b.f32(0.5f); b.f32(0.25f);  // Center
+}
+
 } // namespace
 
 // Regression test for the exact bug found against cre_cp_spider.nif: at version 20.3.0.9,
@@ -176,6 +187,49 @@ TEST(NifTexturing, TexDescFlagsExposeClampMode) {
     EXPECT_EQ(prop.base_texture_clamp_mode, 3);
     EXPECT_TRUE(prop.dark_texture_has_clamp_mode);
     EXPECT_EQ(prop.dark_texture_clamp_mode, 1);
+}
+
+TEST(NifTexturing, TexDescPreservesTextureTransform) {
+    NifBuilder texBlock;
+    write_source_texture_body(texBlock, 0);
+    uint32_t texBlockSize = static_cast<uint32_t>(texBlock.data.size());
+
+    NifBuilder propBlock;
+    write_ni_object_net(propBlock, -1, -1);
+    propBlock.u16(0);
+    propBlock.u32(1);
+    propBlock.u8(1);
+    write_tex_desc_transform(propBlock, 0, 3);
+    propBlock.u8(0);
+    propBlock.u8(0);
+    propBlock.u8(0);
+    propBlock.u8(0);
+    propBlock.u32(0);
+    uint32_t propBlockSize = static_cast<uint32_t>(propBlock.data.size());
+
+    NifBuilder b;
+    write_header(b,
+        {"TransformedTexture.dds"},
+        {"NiSourceTexture", "NiTexturingProperty"},
+        {0, 1},
+        {texBlockSize, propBlockSize});
+    b.data.insert(b.data.end(), texBlock.data.begin(), texBlock.data.end());
+    b.data.insert(b.data.end(), propBlock.data.begin(), propBlock.data.end());
+
+    b.u32(0);
+    auto nif = nif_parse(b.data);
+
+    ASSERT_EQ(nif.texturing_properties.size(), 1u);
+    const auto& transform = nif.texturing_properties[0].base_texture_transform;
+    EXPECT_TRUE(transform.enabled);
+    EXPECT_FLOAT_EQ(transform.translation.u, 0.25f);
+    EXPECT_FLOAT_EQ(transform.translation.v, -0.5f);
+    EXPECT_FLOAT_EQ(transform.scale.u, 2.0f);
+    EXPECT_FLOAT_EQ(transform.scale.v, 0.5f);
+    EXPECT_FLOAT_EQ(transform.rotation, 0.75f);
+    EXPECT_EQ(transform.method, 1u);
+    EXPECT_FLOAT_EQ(transform.center.u, 0.5f);
+    EXPECT_FLOAT_EQ(transform.center.v, 0.25f);
 }
 
 // ResolveBaseTextureFilename walks node.properties[] -> NiTexturingProperty (by block_index) ->

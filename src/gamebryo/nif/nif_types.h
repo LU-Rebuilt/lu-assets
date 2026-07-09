@@ -148,6 +148,15 @@ struct NifUV {
     float u = 0, v = 0;
 };
 
+struct NifTextureTransform {
+    bool enabled = false;
+    NifUV translation = {0.0f, 0.0f};
+    NifUV scale = {1.0f, 1.0f};
+    float rotation = 0.0f;
+    uint32_t method = 0;
+    NifUV center = {0.0f, 0.0f};
+};
+
 struct NifTriangle {
     uint16_t a, b, c;
 };
@@ -185,18 +194,23 @@ struct NifTexturingProperty {
     int32_t base_texture_source_ref = -1; // block index of the base slot's NiSourceTexture, or -1
     bool base_texture_has_clamp_mode = false;
     uint8_t base_texture_clamp_mode = 3; // TexClampMode: 3 = wrap U and V.
+    NifTextureTransform base_texture_transform;
     int32_t dark_texture_source_ref = -1;
     bool dark_texture_has_clamp_mode = false;
     uint8_t dark_texture_clamp_mode = 3;
+    NifTextureTransform dark_texture_transform;
     int32_t detail_texture_source_ref = -1;
     bool detail_texture_has_clamp_mode = false;
     uint8_t detail_texture_clamp_mode = 3;
+    NifTextureTransform detail_texture_transform;
     int32_t gloss_texture_source_ref = -1;
     bool gloss_texture_has_clamp_mode = false;
     uint8_t gloss_texture_clamp_mode = 3;
+    NifTextureTransform gloss_texture_transform;
     int32_t glow_texture_source_ref = -1;
     bool glow_texture_has_clamp_mode = false;
     uint8_t glow_texture_clamp_mode = 3;
+    NifTextureTransform glow_texture_transform;
 };
 
 // NiAlphaProperty -- authored alpha state attached through NifNode::properties.

@@ -696,6 +696,7 @@ struct TexDescInfo {
     int32_t source_ref = -1;
     bool has_clamp_mode = false;
     uint8_t clamp_mode = 3;
+    NifTextureTransform transform;
 };
 
 TexDescInfo read_tex_desc(BinaryReader& r, uint32_t version) {
@@ -721,13 +722,16 @@ TexDescInfo read_tex_desc(BinaryReader& r, uint32_t version) {
     }
 
     if (version >= 0x0A010000) { // "Has Texture Transform" since 10.1.0.0
-        bool hasTransform = r.read_bool();
-        if (hasTransform) {
-            r.read_f32(); r.read_f32(); // Translation (TexCoord)
-            r.read_f32(); r.read_f32(); // Scale (TexCoord)
-            r.read_f32();               // Rotation
-            r.read_u32();               // Transform Method
-            r.read_f32(); r.read_f32(); // Center (TexCoord)
+        desc.transform.enabled = r.read_bool();
+        if (desc.transform.enabled) {
+            desc.transform.translation.u = r.read_f32();
+            desc.transform.translation.v = r.read_f32();
+            desc.transform.scale.u = r.read_f32();
+            desc.transform.scale.v = r.read_f32();
+            desc.transform.rotation = r.read_f32();
+            desc.transform.method = r.read_u32();
+            desc.transform.center.u = r.read_f32();
+            desc.transform.center.v = r.read_f32();
         }
     }
     return desc;
@@ -757,6 +761,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         prop.base_texture_source_ref = desc.source_ref;
         prop.base_texture_has_clamp_mode = desc.has_clamp_mode;
         prop.base_texture_clamp_mode = desc.clamp_mode;
+        prop.base_texture_transform = desc.transform;
     }
 
     bool hasDark = r.read_bool();
@@ -765,6 +770,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         prop.dark_texture_source_ref = desc.source_ref;
         prop.dark_texture_has_clamp_mode = desc.has_clamp_mode;
         prop.dark_texture_clamp_mode = desc.clamp_mode;
+        prop.dark_texture_transform = desc.transform;
     }
 
     bool hasDetail = r.read_bool();
@@ -773,6 +779,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         prop.detail_texture_source_ref = desc.source_ref;
         prop.detail_texture_has_clamp_mode = desc.has_clamp_mode;
         prop.detail_texture_clamp_mode = desc.clamp_mode;
+        prop.detail_texture_transform = desc.transform;
     }
 
     bool hasGloss = r.read_bool();
@@ -781,6 +788,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         prop.gloss_texture_source_ref = desc.source_ref;
         prop.gloss_texture_has_clamp_mode = desc.has_clamp_mode;
         prop.gloss_texture_clamp_mode = desc.clamp_mode;
+        prop.gloss_texture_transform = desc.transform;
     }
 
     bool hasGlow = r.read_bool();
@@ -789,6 +797,7 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         prop.glow_texture_source_ref = desc.source_ref;
         prop.glow_texture_has_clamp_mode = desc.has_clamp_mode;
         prop.glow_texture_clamp_mode = desc.clamp_mode;
+        prop.glow_texture_transform = desc.transform;
     }
 
     if (textureCount > 5) {
