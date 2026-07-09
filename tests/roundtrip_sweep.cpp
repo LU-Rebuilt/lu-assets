@@ -5,8 +5,9 @@
 //   roundtrip_sweep <client-root> [<client-root>...]
 //
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
-// .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, and ForkParticle
-// effect scripts (content-sniffed under a plain ".txt" extension).
+// .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
+// (brick geometry), and ForkParticle effect scripts (content-sniffed under a plain ".txt"
+// extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -43,6 +44,8 @@
 #include "forkparticle/psb/psb_writer.h"
 #include "forkparticle/effect/effect_reader.h"
 #include "forkparticle/effect/effect_writer.h"
+#include "lego/brick_geometry/brick_geometry.h"
+#include "lego/brick_geometry/brick_geometry_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -338,6 +341,9 @@ int main(int argc, char* argv[]) {
         std::string out = lu::assets::effect_write(lu::assets::effect_parse(text));
         return std::vector<uint8_t>(out.begin(), out.end());
     };
+    const RoundTripFunc brick_geom_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::brick_geometry_write(lu::assets::brick_geometry_parse(d));
+    };
 
     struct Handler {
         const RoundTripFunc* fn;
@@ -363,6 +369,9 @@ int main(int argc, char* argv[]) {
         // unrelated binary blobs, so scope by path in the walk below.
         {".raw", {&terrain_rt, {}}},
         {".psb", {&psb_rt, {}}},
+        {".g", {&brick_geom_rt, {}}},
+        {".g1", {&brick_geom_rt, {}}},
+        {".g2", {&brick_geom_rt, {}}},
     };
 
     std::map<std::string, FormatStats> stats;

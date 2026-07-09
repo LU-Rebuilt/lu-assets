@@ -57,13 +57,39 @@ void assemble_part(const LxfmlPart& part,
         }
         if (geom.vertices.empty()) break;
 
-        // Determine which bone transform to use for each vertex.
-        // If the geometry has bone mapping and the part has multiple bones,
-        // each vertex is transformed by its assigned bone.
-        // Otherwise, use the first bone's transform for all vertices.
-        bool use_per_vertex_bones = !geom.bone_mapping.empty() &&
-                                     part.bones.size() > 1 &&
-                                     geom.bone_mapping.size() == geom.vertices.size();
+        // Per-vertex bone selection for multi-bone parts, derived from the real on-disk
+        // skin-index block (options & 0x10) rather than the old (wrong) assumption of a
+        // simple per-vertex bone-index array. Ghidra RE (LEGO::BrickGeometry::vfunc3,
+        // legouniverse.exe 1.10.64) confirmed the block shape — weight_group_indices[]
+        // (one entry per weight group) + index_mapping[] (one entry per TRIANGLE INDEX,
+        // not per vertex) — but no consumer function could be found to confirm exactly
+        // how weight_group_indices maps to a bone/transform slot. Best-supported reading
+        // from the data shapes alone: for triangle-index position i, index_mapping[i]
+        // selects into weight_group_indices to give the bone index for vertex
+        // indices[i]. Builds a per-vertex bone-index table from that before the main
+        // vertex loop; falls back to the first bone when unavailable (no skin-index
+        // block, or a vertex never referenced by any triangle index).
+        //
+        // The 0x20 skin-weight block (Vec3-valued, likely multi-bone blend weights per
+        // the standard BlendWeights/BlendIndices shader pattern seen elsewhere in the
+        // client) is deliberately NOT applied here — blending math would be guesswork
+        // without a confirmed consumer, so parts using it currently render with only
+        // the single bone from the 0x10 block (or the first bone, if 0x10 is absent).
+        std::vector<int> vertex_bone(geom.vertices.size(), 0);
+        if (geom.has_skin_indices && part.bones.size() > 1 &&
+            geom.skin_indices.index_mapping.size() == geom.indices.size()) {
+            const auto& groups = geom.skin_indices.weight_group_indices;
+            for (size_t ii = 0; ii < geom.indices.size(); ++ii) {
+                uint32_t group = geom.skin_indices.index_mapping[ii];
+                if (group >= groups.size()) continue;
+                uint32_t vidx = geom.indices[ii];
+                if (vidx >= vertex_bone.size()) continue;
+                uint32_t bone = groups[group];
+                if (bone < part.bones.size()) {
+                    vertex_bone[vidx] = static_cast<int>(bone);
+                }
+            }
+        }
 
         uint32_t base_vertex = static_cast<uint32_t>(out.vertices.size() / 3);
 
@@ -75,16 +101,12 @@ void assemble_part(const LxfmlPart& part,
             float ny = geom.vertices[vi].normal.y;
             float nz = geom.vertices[vi].normal.z;
 
-            // Determine bone index
-            int bone_idx = 0;
-            if (use_per_vertex_bones) {
-                bone_idx = static_cast<int>(geom.bone_mapping[vi]);
-            }
+            int bone_idx = vertex_bone[vi];
 
             // Apply pre-flex bone transform (for multi-bone parts, position
             // each vertex according to its bone). Then apply the first bone
             // as the global placement transform.
-            if (use_per_vertex_bones && bone_idx < static_cast<int>(part.bones.size())) {
+            if (bone_idx != 0 && bone_idx < static_cast<int>(part.bones.size())) {
                 apply_transform(part.bones[bone_idx].transform, px, py, pz);
                 apply_rotation(part.bones[bone_idx].transform, nx, ny, nz);
             } else if (!part.bones.empty()) {
