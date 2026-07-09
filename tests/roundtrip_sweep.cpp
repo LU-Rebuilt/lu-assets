@@ -5,8 +5,8 @@
 //   roundtrip_sweep <client-root> [<client-root>...]
 //
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
-// .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, and ForkParticle effect
-// scripts (content-sniffed under a plain ".txt" extension).
+// .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, and ForkParticle
+// effect scripts (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -16,6 +16,7 @@
 #include "gamebryo/settings/settings_writer.h"
 #include "netdevil/archive/pk/pk_reader.h"
 #include "netdevil/archive/sd0/sd0_reader.h"
+#include "netdevil/archive/sd0/sd0_writer.h"
 #include "netdevil/zone/luz/luz_reader.h"
 #include "netdevil/zone/luz/luz_writer.h"
 #include "netdevil/zone/lvl/lvl_reader.h"
@@ -104,7 +105,7 @@ void check_file(const fs::path& path, const RoundTripFunc& round_trip, FormatSta
 
     // Some client dumps (1.7.45, 0.179.12, leaks) ship individual files still
     // SD0-compressed on disk. Round-trip the decompressed payload — that's the actual
-    // format file; SD0 re-compression byte-identity is a separate (zlib-dependent) story.
+    // format file; SD0 itself is checked separately via the ".sd0" extension handler.
     if (data.size() >= 5 && memcmp(data.data(), "sd0\x01\xff", 5) == 0) {
         try {
             data = lu::assets::sd0_decompress(data);
@@ -166,6 +167,42 @@ std::string lower_ext(const fs::path& p) {
 // index by path CRC and carry no filenames.
 bool sniff_settings(const std::vector<uint8_t>& d) {
     return d.size() >= 6 && d[0] == 5 && memcmp(d.data() + 1, "2.3.0", 5) == 0;
+}
+
+// Standalone .sd0 files: decompress then recompress and compare against the original
+// bytes directly (not the decompressed payload — that's a different format entirely and
+// gets its own extension's round-trip check once unwrapped by check_file below).
+void check_sd0(const fs::path& path, FormatStats& stats) {
+    auto data = read_file(path);
+    if (data.empty()) return;
+    if (!lu::assets::sd0_is_compressed(data)) {
+        stats.skipped++;
+        return;
+    }
+
+    std::vector<uint8_t> out;
+    try {
+        auto decompressed = lu::assets::sd0_decompress(data);
+        out = lu::assets::sd0_compress(decompressed);
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    if (out == data) {
+        stats.ok++;
+        return;
+    }
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
+    }
 }
 
 // Round-trip every Gamebryo-format entry inside a .pk archive. Entries are identified by
@@ -341,6 +378,10 @@ int main(int argc, char* argv[]) {
             std::string ext = lower_ext(e.path());
             if (ext == ".pk") {
                 check_pk(e.path(), nif_rt, kfm_rt, settings_rt, stats);
+                continue;
+            }
+            if (ext == ".sd0") {
+                check_sd0(e.path(), stats[".sd0"]);
                 continue;
             }
             // ForkParticle effect scripts ship as plain ".txt" (no distinguishing

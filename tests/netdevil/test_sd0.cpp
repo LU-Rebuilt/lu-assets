@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "netdevil/archive/sd0/sd0_reader.h"
+#include "netdevil/archive/sd0/sd0_writer.h"
 
 #include <zlib.h>
 #include <cstring>
@@ -102,4 +103,37 @@ TEST(SD0, ChunkSizeExceedsDataThrows) {
     // Header + chunk size says 100 bytes but only 2 bytes follow
     uint8_t data[] = {0x73, 0x64, 0x30, 0x01, 0xFF, 0x64, 0x00, 0x00, 0x00, 0xAA, 0xBB};
     EXPECT_THROW(sd0_decompress(data), Sd0Error);
+}
+
+TEST(SD0, CompressEmptyProducesHeaderOnly) {
+    auto out = sd0_compress({});
+    ASSERT_EQ(out.size(), SD0_HEADER_SIZE);
+    EXPECT_TRUE(sd0_is_compressed(out));
+}
+
+TEST(SD0, CompressDecompressRoundTrip) {
+    std::string original = "Hello, LEGO Universe! This is a test of SD0 round-tripping.";
+    std::vector<uint8_t> data(original.begin(), original.end());
+
+    auto compressed = sd0_compress(data);
+    EXPECT_TRUE(sd0_is_compressed(compressed));
+    auto decompressed = sd0_decompress(compressed);
+    EXPECT_EQ(decompressed, data);
+}
+
+TEST(SD0, CompressChunksAtBoundary) {
+    // A payload spanning exactly two chunks (256KB each) should produce two chunk records.
+    std::vector<uint8_t> data(SD0_CHUNK_SIZE + 100, 0x42);
+    auto compressed = sd0_compress(data);
+
+    size_t pos = SD0_HEADER_SIZE;
+    int chunk_count = 0;
+    while (pos < compressed.size()) {
+        uint32_t chunk_size;
+        std::memcpy(&chunk_size, compressed.data() + pos, 4);
+        pos += 4 + chunk_size;
+        chunk_count++;
+    }
+    EXPECT_EQ(chunk_count, 2);
+    EXPECT_EQ(sd0_decompress(compressed), data);
 }
