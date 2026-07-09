@@ -68,12 +68,18 @@ static void finish_chunk(BinaryWriter& w, size_t size_pos, size_t data_start) {
 }
 
 static void write_lighting(BinaryWriter& w, const LvlLightingInfo& li, uint32_t version) {
+    // (position vs light_angles handled below — v35/36 store two direction angles)
     if (version >= 45) w.write_f32(li.blend_time);
 
     for (float f : li.ambient)    w.write_f32(f);
     for (float f : li.specular)   w.write_f32(f);
     for (float f : li.upper_hemi) w.write_f32(f);
-    write_vec3(w, li.position);
+    if (version == 35 || version == 36) {
+        w.write_f32(li.light_angles[0]);
+        w.write_f32(li.light_angles[1]);
+    } else {
+        write_vec3(w, li.position);
+    }
 
     if (version >= 39) {
         auto write_dd = [&](const LvlDrawDistances& dd) {
@@ -138,45 +144,92 @@ static void write_editor(BinaryWriter& w, const LvlEditorSettings& es) {
     w.patch_u32(block_size_pos, block_size);
 }
 
+static void write_object(BinaryWriter& w, const LvlObject& obj, uint32_t version) {
+    w.write_u64(obj.object_id);
+    w.write_u32(obj.lot);
+    if (version >= 38) w.write_u32(static_cast<uint32_t>(obj.node_type));
+    if (version >= 32) w.write_u32(obj.glom_id);
+    write_vec3(w, obj.position);
+    write_quat_wxyz(w, obj.rotation);
+    w.write_f32(obj.scale);
+    write_object_config(w, obj.config);
+    if (version >= 7) write_render_technique(w, obj.render_technique);
+}
+
+static void write_particle(BinaryWriter& w, const LvlParticle& p, uint32_t version) {
+    if (version >= 43) w.write_u16(p.priority);
+    write_vec3(w, p.position);
+    write_quat_wxyz(w, p.rotation);
+
+    w.write_u32(static_cast<uint32_t>(p.effect_names.size()));
+    for (char c : p.effect_names)
+        w.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
+
+    if (version < 46) {
+        w.write_u8(0);
+        w.write_u8(0);
+    } else {
+        std::string cfg_str = ldf_write_text(p.config);
+        if (!cfg_str.empty() && cfg_str.back() == '\n') cfg_str.pop_back();
+        w.write_u32(static_cast<uint32_t>(cfg_str.size()));
+        for (char c : cfg_str)
+            w.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
+    }
+}
+
+// Old pre-chunked container — sequential sections, mirroring parse_old_lvl.
+static std::vector<uint8_t> write_old_lvl(const LvlFile& lvl) {
+    BinaryWriter w;
+
+    w.write_u16(static_cast<uint16_t>(lvl.version));
+    w.write_u16(static_cast<uint16_t>(lvl.version));
+    w.write_u8(lvl.old_unknown_byte);
+    w.write_u32(lvl.revision);
+
+    write_lighting(w, lvl.environment.lighting, lvl.version);
+    write_skydome(w, lvl.environment.skydome, lvl.version);
+    if (lvl.version >= 37) {
+        write_editor(w, lvl.environment.editor);
+    }
+
+    w.write_u32(static_cast<uint32_t>(lvl.objects.size()));
+    for (const LvlObject& obj : lvl.objects) {
+        write_object(w, obj, lvl.version);
+    }
+
+    w.write_u32(static_cast<uint32_t>(lvl.old_env_blocks.size()));
+    for (const LvlEnvBlock& block : lvl.old_env_blocks) {
+        write_vec3(w, block.position);
+        write_object_config(w, block.config);
+    }
+
+    if (lvl.has_particles) {
+        w.write_u32(static_cast<uint32_t>(lvl.particles.size()));
+        for (const LvlParticle& p : lvl.particles) {
+            write_particle(w, p, lvl.version);
+        }
+    }
+
+    return std::move(w.data());
+}
+
 std::vector<uint8_t> lvl_write(const LvlFile& lvl) {
+    if (lvl.old_format) {
+        return write_old_lvl(lvl);
+    }
     BinaryWriter w;
     uint32_t version = lvl.version;
 
     BinaryWriter obj_payload;
     obj_payload.write_u32(static_cast<uint32_t>(lvl.objects.size()));
     for (auto& obj : lvl.objects) {
-        obj_payload.write_u64(obj.object_id);
-        obj_payload.write_u32(obj.lot);
-        if (version >= 38) obj_payload.write_u32(static_cast<uint32_t>(obj.node_type));
-        if (version >= 32) obj_payload.write_u32(obj.glom_id);
-        write_vec3(obj_payload, obj.position);
-        write_quat_wxyz(obj_payload, obj.rotation);
-        obj_payload.write_f32(obj.scale);
-        write_object_config(obj_payload, obj.config);
-        if (version >= 7) write_render_technique(obj_payload, obj.render_technique);
+        write_object(obj_payload, obj, version);
     }
 
     BinaryWriter particle_payload;
     particle_payload.write_u32(static_cast<uint32_t>(lvl.particles.size()));
     for (auto& p : lvl.particles) {
-        if (version >= 43) particle_payload.write_u16(p.priority);
-        write_vec3(particle_payload, p.position);
-        write_quat_wxyz(particle_payload, p.rotation);
-
-        particle_payload.write_u32(static_cast<uint32_t>(p.effect_names.size()));
-        for (char c : p.effect_names)
-            particle_payload.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
-
-        if (version < 46) {
-            particle_payload.write_u8(0);
-            particle_payload.write_u8(0);
-        } else {
-            std::string cfg_str = ldf_write_text(p.config);
-            if (!cfg_str.empty() && cfg_str.back() == '\n') cfg_str.pop_back();
-            particle_payload.write_u32(static_cast<uint32_t>(cfg_str.size()));
-            for (char c : cfg_str)
-                particle_payload.write_u16(static_cast<uint16_t>(static_cast<uint8_t>(c)));
-        }
+        write_particle(particle_payload, p, version);
     }
 
     // === Chunk 1000 (fib) ===

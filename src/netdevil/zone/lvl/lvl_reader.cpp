@@ -97,13 +97,8 @@ static std::string read_fixed_str(BinaryReader& r, size_t field_size) {
 
 // lighting_info — version-gated per lu_formats/files/lvl.ksy.
 // Offsets are absolute within the file, so we create a fresh BinaryReader for each sub-section.
-static LvlLightingInfo parse_lighting(std::span<const uint8_t> file_data,
-                                       uint32_t abs_offset,
-                                       uint32_t version) {
+static LvlLightingInfo parse_lighting_seq(BinaryReader& r, uint32_t version) {
     LvlLightingInfo li;
-    if (abs_offset == 0 || abs_offset >= file_data.size()) return li;
-
-    BinaryReader r(file_data.subspan(abs_offset));
 
     // blend_time (version >= 45)
     if (version >= 45) li.blend_time = r.read_f32();
@@ -113,7 +108,14 @@ static LvlLightingInfo parse_lighting(std::span<const uint8_t> file_data,
     for (float& f : li.specular)   f = r.read_f32();
     for (float& f : li.upper_hemi) f = r.read_f32();
 
-    li.position = read_vec3(r);
+    // v35/36: two light-direction angles instead of the position vec3.
+    if (version == 35 || version == 36) {
+        li.has_light_angles = true;
+        li.light_angles[0] = r.read_f32();
+        li.light_angles[1] = r.read_f32();
+    } else {
+        li.position = read_vec3(r);
+    }
 
     // Draw distances (version >= 39)
     if (version >= 39) {
@@ -169,13 +171,16 @@ static LvlLightingInfo parse_lighting(std::span<const uint8_t> file_data,
     return li;
 }
 
-static LvlSkydomeInfo parse_skydome(std::span<const uint8_t> file_data,
-                                     uint32_t abs_offset,
-                                     uint32_t version) {
-    LvlSkydomeInfo si;
-    if (abs_offset == 0 || abs_offset >= file_data.size()) return si;
-
+static LvlLightingInfo parse_lighting(std::span<const uint8_t> file_data,
+                                       uint32_t abs_offset,
+                                       uint32_t version) {
+    if (abs_offset == 0 || abs_offset >= file_data.size()) return {};
     BinaryReader r(file_data.subspan(abs_offset));
+    return parse_lighting_seq(r, version);
+}
+
+static LvlSkydomeInfo parse_skydome_seq(BinaryReader& r, uint32_t version) {
+    LvlSkydomeInfo si;
     si.filename = read_u4_str(r);
 
     // sky_layer + ring_layer[0-3] (version >= 34)
@@ -188,12 +193,16 @@ static LvlSkydomeInfo parse_skydome(std::span<const uint8_t> file_data,
     return si;
 }
 
-static LvlEditorSettings parse_editor(std::span<const uint8_t> file_data,
-                                       uint32_t abs_offset) {
-    LvlEditorSettings es;
-    if (abs_offset == 0 || abs_offset >= file_data.size()) return es;
-
+static LvlSkydomeInfo parse_skydome(std::span<const uint8_t> file_data,
+                                     uint32_t abs_offset,
+                                     uint32_t version) {
+    if (abs_offset == 0 || abs_offset >= file_data.size()) return {};
     BinaryReader r(file_data.subspan(abs_offset));
+    return parse_skydome_seq(r, version);
+}
+
+static LvlEditorSettings parse_editor_seq(BinaryReader& r) {
+    LvlEditorSettings es;
     r.skip(4);  // chunk_size (u32) — size of this sub-block; we read sequentially
     uint32_t num_colors = r.read_u32();
     if (num_colors > 4096) return es;
@@ -206,6 +215,13 @@ static LvlEditorSettings parse_editor(std::span<const uint8_t> file_data,
         es.saved_colors.push_back(c);
     }
     return es;
+}
+
+static LvlEditorSettings parse_editor(std::span<const uint8_t> file_data,
+                                       uint32_t abs_offset) {
+    if (abs_offset == 0 || abs_offset >= file_data.size()) return {};
+    BinaryReader r(file_data.subspan(abs_offset));
+    return parse_editor_seq(r);
 }
 
 // Chunk 2000 payload: 3 absolute offsets → lighting, skydome, editor.
@@ -329,7 +345,73 @@ static LvlParticle parse_particle(BinaryReader& r, uint32_t version) {
 
 // ── Main parser ───────────────────────────────────────────────────────────────
 
+// Old pre-chunked container: u16 version twice, u8, u32 revision, then the chunk
+// 2000/2001/2002 payloads laid out sequentially (no offsets), plus an env-block section
+// between objects and particles that the chunked format dropped. Layout verified to
+// exact-EOF against 616 shipped files (versions 31-43) across every client dump.
+static LvlFile parse_old_lvl(std::span<const uint8_t> data) {
+    BinaryReader r(data);
+    LvlFile lvl;
+    lvl.old_format = true;
+
+    uint16_t header_version = r.read_u16();
+    uint16_t data_version   = r.read_u16();
+    if (header_version != data_version) {
+        throw LvlError("LVL(old): header/data version mismatch");
+    }
+    lvl.version = header_version;
+    lvl.env_data_version = data_version;
+    lvl.old_unknown_byte = r.read_u8();
+    lvl.revision = r.read_u32();
+
+    lvl.environment.lighting = parse_lighting_seq(r, lvl.version);
+    lvl.environment.skydome  = parse_skydome_seq(r, lvl.version);
+    if (lvl.version >= 37) {
+        lvl.environment.editor     = parse_editor_seq(r);
+        lvl.environment.has_editor = true;
+    }
+    lvl.has_environment = true;
+
+    uint32_t num_objects = r.read_u32();
+    if (num_objects > 1000000) throw LvlError("LVL(old): unreasonable object count");
+    lvl.objects.reserve(num_objects);
+    for (uint32_t i = 0; i < num_objects; ++i) {
+        lvl.objects.push_back(parse_object(r, lvl.version));
+    }
+    lvl.has_objects = true;
+
+    uint32_t num_blocks = r.read_u32();
+    if (num_blocks > 100000) throw LvlError("LVL(old): unreasonable env block count");
+    lvl.old_env_blocks.reserve(num_blocks);
+    for (uint32_t i = 0; i < num_blocks; ++i) {
+        LvlEnvBlock block;
+        block.position = read_vec3(r);
+        std::string cfg = read_u4_wstr(r);
+        if (!cfg.empty()) block.config = ldf_parse(cfg);
+        lvl.old_env_blocks.push_back(std::move(block));
+    }
+
+    // A few dev-era files (e.g. luptario005_1_town.lvl) end right before the particle
+    // section; has_particles records whether the section exists so writes round-trip.
+    if (r.remaining() >= 4) {
+        uint32_t num_particles = r.read_u32();
+        if (num_particles > 100000) throw LvlError("LVL(old): unreasonable particle count");
+        lvl.particles.reserve(num_particles);
+        for (uint32_t i = 0; i < num_particles; ++i) {
+            lvl.particles.push_back(parse_particle(r, lvl.version));
+        }
+        lvl.has_particles = true;
+    }
+
+    return lvl;
+}
+
 LvlFile lvl_parse(std::span<const uint8_t> data) {
+    // Old pre-chunked files have no CHNK magic at offset 0.
+    if (data.size() >= 4 && memcmp(data.data(), "CHNK", 4) != 0) {
+        return parse_old_lvl(data);
+    }
+
     BinaryReader r(data);
     LvlFile lvl;
 

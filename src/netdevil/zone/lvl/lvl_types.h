@@ -71,7 +71,11 @@ struct LvlLightingInfo {
     float ambient[3]    = {};       // Ambient light color (RGB)
     float specular[3]   = {};       // Specular light color (RGB)
     float upper_hemi[3] = {};       // Upper hemisphere light color (RGB)
-    Vec3  position;                 // Main light source position
+    Vec3  position;                 // Main light source position (absent in v35/36 files)
+    // v35/36 only: the light is stored as two direction angles instead of a position
+    // (observed in early-build LUP maps; every other version has the vec3).
+    bool  has_light_angles = false;
+    float light_angles[2] = {0.0f, 0.0f};
 
     // version >= 39
     bool            has_draw_distances = false;
@@ -192,9 +196,24 @@ struct LvlParticle {
 
 // ── Top-level file ─────────────────────────────────────────────────────────────
 
+// Old (pre-CHNK) files only: axis-less environment volume — position + LDF config
+// (friction, interaction_distance, soundFalloffFar, ...). The chunked format dropped
+// this section; nothing equivalent exists in CHNK files.
+struct LvlEnvBlock {
+    Vec3 position;
+    std::vector<LdfEntry> config;
+};
+
 struct LvlFile {
     uint32_t version  = 0;          // From fib chunk (chunk 1000)
     uint32_t revision = 0;          // Build revision from fib chunk
+
+    // Old pre-chunked container (no CHNK framing; shipped alongside chunked files even
+    // in 1.10.64). Layout: u16 version ×2, u8, u32 revision, then lighting/skydome/
+    // editor(v>=37)/objects/env-blocks/particles laid out sequentially.
+    bool old_format = false;
+    uint8_t old_unknown_byte = 0;   // header byte after the version pair; 0 in all files
+    std::vector<LvlEnvBlock> old_env_blocks;
 
     LvlEnvironmentData environment;  // From chunk 2000 (may be empty/default)
     bool               has_environment = false;
