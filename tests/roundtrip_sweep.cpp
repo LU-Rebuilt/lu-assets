@@ -4,7 +4,9 @@
 //
 //   roundtrip_sweep <client-root> [<client-root>...]
 //
-// Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings.
+// Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
+// .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, and ForkParticle effect
+// scripts (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -36,6 +38,10 @@
 #include "microsoft/dds/dds_writer.h"
 #include "microsoft/tga/tga_reader.h"
 #include "microsoft/tga/tga_writer.h"
+#include "forkparticle/psb/psb_reader.h"
+#include "forkparticle/psb/psb_writer.h"
+#include "forkparticle/effect/effect_reader.h"
+#include "forkparticle/effect/effect_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -286,6 +292,15 @@ int main(int argc, char* argv[]) {
     const RoundTripFunc tga_rt = [](const std::vector<uint8_t>& d) {
         return lu::assets::tga_write(lu::assets::tga_parse(d));
     };
+    const RoundTripFunc psb_rt = [](const std::vector<uint8_t>& d) {
+        std::span<const uint8_t> span(d.data(), d.size());
+        return lu::assets::psb_write(lu::assets::psb_parse(span), span);
+    };
+    const RoundTripFunc effect_rt = [](const std::vector<uint8_t>& d) {
+        std::string text(reinterpret_cast<const char*>(d.data()), d.size());
+        std::string out = lu::assets::effect_write(lu::assets::effect_parse(text));
+        return std::vector<uint8_t>(out.begin(), out.end());
+    };
 
     struct Handler {
         const RoundTripFunc* fn;
@@ -310,6 +325,7 @@ int main(int argc, char* argv[]) {
         // .raw is only the terrain format under maps/ — other .raw files (if any) are
         // unrelated binary blobs, so scope by path in the walk below.
         {".raw", {&terrain_rt, {}}},
+        {".psb", {&psb_rt, {}}},
     };
 
     std::map<std::string, FormatStats> stats;
@@ -325,6 +341,17 @@ int main(int argc, char* argv[]) {
             std::string ext = lower_ext(e.path());
             if (ext == ".pk") {
                 check_pk(e.path(), nif_rt, kfm_rt, settings_rt, stats);
+                continue;
+            }
+            // ForkParticle effect scripts ship as plain ".txt" (no distinguishing
+            // extension) — identify by the "EMITTERNAME:" prefix every real sample starts
+            // with, same sniff pk_viewer's detectFile() uses.
+            if (ext == ".txt") {
+                auto data = read_file(e.path());
+                if (data.size() >= 12 &&
+                    memcmp(data.data(), "EMITTERNAME:", 12) == 0) {
+                    check_file(e.path(), effect_rt, stats[".effect(.txt)"], {});
+                }
                 continue;
             }
             auto it = handlers.find(ext);
