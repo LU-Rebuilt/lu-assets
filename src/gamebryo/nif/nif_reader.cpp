@@ -198,13 +198,22 @@ NifNode parse_ni_node(BinaryReader& r, uint32_t version,
 // ============================================================================
 
 NifNode parse_ni_lod_node(BinaryReader& r, uint32_t version,
-                          const std::vector<std::string>& string_table) {
+                          const std::vector<std::string>& string_table,
+                          size_t block_end) {
     NifNode node = parse_ni_node(r, version, string_table);
     node.type_name = "NiLODNode";
 
-    // LOD data: block ref to NiRangeLODData (version >= 10.1.0.0) or inline
+    // LOD data: LU's newer files store a level count, a small active-level marker,
+    // then a block ref to NiRangeLODData. Older files may inline the ranges.
     if (version >= 0x0A010000) {
-        node.lod_data_ref = r.read_s32();
+        size_t remaining = block_end > r.pos() ? block_end - r.pos() : 0;
+        if (remaining >= 10) {
+            node.lod_level_count = r.read_u32();
+            node.lod_active_level = r.read_u16();
+            node.lod_data_ref = r.read_s32();
+        } else if (remaining >= 4) {
+            node.lod_data_ref = r.read_s32();
+        }
     } else {
         // Inline: LOD center + levels
         node.lod_center.x = r.read_f32();
@@ -219,6 +228,108 @@ NifNode parse_ni_lod_node(BinaryReader& r, uint32_t version,
     }
 
     return node;
+}
+
+NifRangeLODData parse_range_lod_data(BinaryReader& r) {
+    NifRangeLODData data;
+    data.center.x = r.read_f32();
+    data.center.y = r.read_f32();
+    data.center.z = r.read_f32();
+
+    uint32_t num_ranges = r.read_u32();
+    data.ranges.resize(num_ranges);
+    for (uint32_t i = 0; i < num_ranges; ++i) {
+        data.ranges[i].first = r.read_f32();
+        data.ranges[i].second = r.read_f32();
+    }
+    return data;
+}
+
+Quat read_rotation_matrix_as_quat(BinaryReader& r) {
+    float m[3][3];
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            m[col][row] = r.read_f32();
+        }
+    }
+
+    Quat q;
+    float trace = m[0][0] + m[1][1] + m[2][2];
+    if (trace > 0.0f) {
+        float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m[2][1] - m[1][2]) / s;
+        q.y = (m[0][2] - m[2][0]) / s;
+        q.z = (m[1][0] - m[0][1]) / s;
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+        float s = std::sqrt(1.0f + m[0][0] - m[1][1] - m[2][2]) * 2.0f;
+        q.w = (m[2][1] - m[1][2]) / s;
+        q.x = 0.25f * s;
+        q.y = (m[0][1] + m[1][0]) / s;
+        q.z = (m[0][2] + m[2][0]) / s;
+    } else if (m[1][1] > m[2][2]) {
+        float s = std::sqrt(1.0f + m[1][1] - m[0][0] - m[2][2]) * 2.0f;
+        q.w = (m[0][2] - m[2][0]) / s;
+        q.x = (m[0][1] + m[1][0]) / s;
+        q.y = 0.25f * s;
+        q.z = (m[1][2] + m[2][1]) / s;
+    } else {
+        float s = std::sqrt(1.0f + m[2][2] - m[0][0] - m[1][1]) * 2.0f;
+        q.w = (m[1][0] - m[0][1]) / s;
+        q.x = (m[0][2] + m[2][0]) / s;
+        q.y = (m[1][2] + m[2][1]) / s;
+        q.z = 0.25f * s;
+    }
+    return q;
+}
+
+void read_skin_transform(BinaryReader& r, Vec3& translation, Quat& rotation, float& scale) {
+    rotation = read_rotation_matrix_as_quat(r);
+    translation.x = r.read_f32();
+    translation.y = r.read_f32();
+    translation.z = r.read_f32();
+    scale = r.read_f32();
+}
+
+NifSkinInstance parse_skin_instance(BinaryReader& r) {
+    NifSkinInstance skin;
+    skin.data_ref = r.read_s32();
+    skin.skin_partition_ref = r.read_s32();
+    skin.skeleton_root_ref = r.read_s32();
+
+    uint32_t num_bones = r.read_u32();
+    skin.bone_refs.resize(num_bones);
+    for (uint32_t i = 0; i < num_bones; ++i) {
+        skin.bone_refs[i] = r.read_s32();
+    }
+    return skin;
+}
+
+NifSkinData parse_skin_data(BinaryReader& r) {
+    NifSkinData skin;
+    read_skin_transform(r, skin.translation, skin.rotation, skin.scale);
+
+    uint32_t num_bones = r.read_u32();
+    skin.has_vertex_weights = r.read_bool();
+    skin.bones.resize(num_bones);
+    for (uint32_t bone_index = 0; bone_index < num_bones; ++bone_index) {
+        NifSkinBoneData& bone = skin.bones[bone_index];
+        read_skin_transform(r, bone.translation, bone.rotation, bone.scale);
+        bone.bound_center.x = r.read_f32();
+        bone.bound_center.y = r.read_f32();
+        bone.bound_center.z = r.read_f32();
+        bone.bound_radius = r.read_f32();
+
+        uint16_t num_weights = r.read_u16();
+        if (skin.has_vertex_weights) {
+            bone.weights.resize(num_weights);
+            for (uint16_t weight_index = 0; weight_index < num_weights; ++weight_index) {
+                bone.weights[weight_index].vertex_index = r.read_u16();
+                bone.weights[weight_index].weight = r.read_f32();
+            }
+        }
+    }
+    return skin;
 }
 
 // ============================================================================
@@ -589,7 +700,7 @@ int32_t read_tex_desc_source_ref(BinaryReader& r, uint32_t version) {
     } else {
         r.read_u32(); // Clamp Mode
         r.read_u32(); // Filter Mode
-        if (version >= 0x0A010000) {
+        if (version >= 0x0A010000 && version < 0x14010003) {
             r.read_u32(); // UV Set (removed at 20.1.0.3+)
         }
     }
@@ -635,16 +746,16 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
     }
 
     bool hasDark = r.read_bool();
-    if (hasDark) read_tex_desc_source_ref(r, version);
+    if (hasDark) prop.dark_texture_source_ref = read_tex_desc_source_ref(r, version);
 
     bool hasDetail = r.read_bool();
-    if (hasDetail) read_tex_desc_source_ref(r, version);
+    if (hasDetail) prop.detail_texture_source_ref = read_tex_desc_source_ref(r, version);
 
     bool hasGloss = r.read_bool();
-    if (hasGloss) read_tex_desc_source_ref(r, version);
+    if (hasGloss) prop.gloss_texture_source_ref = read_tex_desc_source_ref(r, version);
 
     bool hasGlow = r.read_bool();
-    if (hasGlow) read_tex_desc_source_ref(r, version);
+    if (hasGlow) prop.glow_texture_source_ref = read_tex_desc_source_ref(r, version);
 
     if (textureCount > 5) {
         bool hasBump = r.read_bool();
@@ -757,18 +868,19 @@ NifTextKeyExtraData parse_text_key_extra_data(BinaryReader& r, uint32_t version,
 // ============================================================================
 // NiControllerSequence: animation clip definition.
 //
-// Field order for version 20.3.0.9 (verified against nif.xml ControllerLink):
-//   NiObjectNET (name, extra data chain, controller ref)
+// Historical note: this used to assume the nif.xml NiObjectNET layout here,
+// but LU KF files store a leaner NiSequence-derived payload.
+//   string sequence_name
 //   u32 num_controlled_blocks
 //   ControllerLink[num_controlled_blocks]  — each for v >= 20.1.0.3:
-//     i32 interpolator_ref
 //     i32 controller_ref
-//     u8  priority
+//     i32 interpolator_ref
+//     i32 priority
 //     i32 node_name       (string table index)
 //     i32 property_type   (string table index)
 //     i32 controller_type (string table index)
 //     i32 controller_id   (string table index)
-//     i32 interpolator_id (string table index)
+//   i32 unknown/palette ref
 //   f32 weight
 //   i32 text_keys_ref
 //   u32 cycle_type
@@ -777,15 +889,22 @@ NifTextKeyExtraData parse_text_key_extra_data(BinaryReader& r, uint32_t version,
 //   f32 stop_time
 //   i32 manager_ref
 //   i32 accum_root_name  (string table index for v >= 20.1.0.3)
+//   i32 string palette/state
 // ============================================================================
 
+// Note: LU KF NiControllerSequence blocks are NiSequence-derived payloads.
+// They begin with a string-table name and controlled-block count, not a
+// NiObjectNET name/extra/controller header.
 NifControllerSequence parse_controller_sequence(BinaryReader& r, uint32_t version,
-                                                 const std::vector<std::string>& string_table) {
+                                                 const std::vector<std::string>& string_table,
+                                                 size_t block_end) {
     NifControllerSequence seq;
 
-    // NiObjectNET: name, extra data, controller
-    auto net = read_ni_object_net(r, version, string_table);
-    seq.name = std::move(net.name);
+    if (version >= 0x14010003) {
+        seq.name = resolve_string(string_table, r.read_s32());
+    } else {
+        seq.name = r.read_string32();
+    }
 
     // Controlled blocks
     seq.num_controlled_blocks = r.read_u32();
@@ -794,13 +913,11 @@ NifControllerSequence parse_controller_sequence(BinaryReader& r, uint32_t versio
     for (uint32_t i = 0; i < seq.num_controlled_blocks; ++i) {
         NifControlledBlock cb;
 
-        if (version >= 0x0A010006) {
-            cb.interpolator_ref = r.read_s32();
-        }
         cb.controller_ref = r.read_s32();
+        cb.interpolator_ref = r.read_s32();
 
         if (version >= 0x0A010006) {
-            cb.priority = r.read_u8();
+            cb.priority = static_cast<uint8_t>(std::clamp(r.read_s32(), 0, 255));
         }
 
         if (version >= 0x14010003) {
@@ -809,7 +926,7 @@ NifControllerSequence parse_controller_sequence(BinaryReader& r, uint32_t versio
             cb.property_type   = resolve_string(string_table, r.read_s32());
             cb.controller_type = resolve_string(string_table, r.read_s32());
             cb.controller_id   = resolve_string(string_table, r.read_s32());
-            cb.interpolator_id = resolve_string(string_table, r.read_s32());
+            cb.interpolator_id = {};
         } else {
             cb.node_name       = r.read_string32();
             cb.property_type   = r.read_string32();
@@ -822,6 +939,11 @@ NifControllerSequence parse_controller_sequence(BinaryReader& r, uint32_t versio
     }
 
     // Sequence-level fields (after all controlled blocks)
+    const size_t tail_bytes = block_end > r.pos() ? block_end - r.pos() : 0;
+    if (tail_bytes >= 40) {
+        (void)r.read_s32();
+    }
+
     seq.weight        = r.read_f32();
     seq.text_keys_ref = r.read_s32();
     seq.cycle_type    = r.read_u32();
@@ -834,6 +956,10 @@ NifControllerSequence parse_controller_sequence(BinaryReader& r, uint32_t versio
         seq.accum_root_name = resolve_string(string_table, r.read_s32());
     } else {
         seq.accum_root_name = r.read_string32();
+    }
+
+    if (block_end >= r.pos() + 4) {
+        (void)r.read_s32();
     }
 
     return seq;
@@ -1148,7 +1274,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
             }
             // NiLODNode (scene hierarchy with LOD)
             else if (type_name == "NiLODNode") {
-                NifNode node = parse_ni_lod_node(r, nif.version, nif.string_table);
+                NifNode node = parse_ni_lod_node(r, nif.version, nif.string_table, block_end);
                 node.block_index = block_idx;
                 nif.nodes.push_back(std::move(node));
             }
@@ -1196,10 +1322,29 @@ NifFile nif_parse(std::span<const uint8_t> data) {
                 prop.block_index = block_idx;
                 nif.alpha_properties.push_back(std::move(prop));
             }
+            // NiRangeLODData (LOD center and near/far distance table)
+            else if (type_name == "NiRangeLODData") {
+                NifRangeLODData data = parse_range_lod_data(r);
+                data.block_index = block_idx;
+                nif.range_lod_data.push_back(std::move(data));
+            }
+            // NiSkinInstance (mesh -> skeleton/bone palette binding)
+            else if (type_name == "NiSkinInstance") {
+                NifSkinInstance skin = parse_skin_instance(r);
+                skin.block_index = block_idx;
+                nif.skin_instances.push_back(std::move(skin));
+            }
+            // NiSkinData (bind transforms and per-bone vertex weights)
+            else if (type_name == "NiSkinData") {
+                NifSkinData skin = parse_skin_data(r);
+                skin.block_index = block_idx;
+                nif.skin_data.push_back(std::move(skin));
+            }
             // ---- Animation blocks (found in .kf files) ----
             // NiControllerSequence (animation clip definition)
             else if (type_name == "NiControllerSequence") {
-                NifControllerSequence seq = parse_controller_sequence(r, nif.version, nif.string_table);
+                NifControllerSequence seq =
+                    parse_controller_sequence(r, nif.version, nif.string_table, block_end);
                 seq.block_index = block_idx;
                 nif.sequences.push_back(std::move(seq));
             }

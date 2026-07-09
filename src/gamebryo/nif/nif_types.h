@@ -176,13 +176,17 @@ struct NifTextureRef {
     int32_t pixel_data_ref = -1; // block index of embedded NiPixelData, when !useExternal
 };
 
-// NiTexturingProperty — the texture-slot table attached to a NiTriShape/NiTriStrips via its
-// properties[] list. Only the base (slot 0) texture is resolved to a NifTextureRef here — the
-// other 6 texture-map slots (dark/detail/gloss/glow/bump/decal) exist in the format but aren't
-// consumed by anything yet.
+// NiTexturingProperty -- the texture-slot table attached to a NiTriShape/NiTriStrips via its
+// properties[] list. lu-assets preserves authored source refs for slots that LU
+// shaders commonly use; renderer-specific meaning such as "dark map" vs
+// "shader control texture" stays outside this parser.
 struct NifTexturingProperty {
     uint32_t block_index = 0;
     int32_t base_texture_source_ref = -1; // block index of the base slot's NiSourceTexture, or -1
+    int32_t dark_texture_source_ref = -1;
+    int32_t detail_texture_source_ref = -1;
+    int32_t gloss_texture_source_ref = -1;
+    int32_t glow_texture_source_ref = -1;
 };
 
 // NiAlphaProperty -- authored alpha state attached through NifNode::properties.
@@ -191,6 +195,49 @@ struct NifAlphaProperty {
     uint32_t block_index = 0;
     uint16_t flags = 0;
     uint8_t threshold = 0;
+};
+
+// NiRangeLODData -- authored LOD center and distance ranges referenced by a NiLODNode.
+struct NifRangeLODData {
+    uint32_t block_index = 0;
+    Vec3 center;
+    std::vector<std::pair<float, float>> ranges; // (near, far) pairs
+};
+
+// Per-bone vertex weight as stored in NiSkinData. The bone index is implied by
+// the containing NifSkinBoneData entry and is assigned during render extraction.
+struct NifSkinWeight {
+    uint16_t vertex_index = 0;
+    float weight = 0.0f;
+};
+
+// One NiSkinData bone record: bind transform, bounds, and authored vertex weights.
+struct NifSkinBoneData {
+    Vec3 translation;
+    Quat rotation;
+    float scale = 1.0f;
+    Vec3 bound_center;
+    float bound_radius = 0.0f;
+    std::vector<NifSkinWeight> weights;
+};
+
+// NiSkinData -- bind pose transforms and per-bone vertex weights.
+struct NifSkinData {
+    uint32_t block_index = 0;
+    Vec3 translation;
+    Quat rotation;
+    float scale = 1.0f;
+    bool has_vertex_weights = false;
+    std::vector<NifSkinBoneData> bones;
+};
+
+// NiSkinInstance -- mesh-to-skeleton binding and bone palette refs.
+struct NifSkinInstance {
+    uint32_t block_index = 0;
+    int32_t data_ref = -1;
+    int32_t skin_partition_ref = -1;
+    int32_t skeleton_root_ref = -1;
+    std::vector<int32_t> bone_refs;
 };
 
 // Node in the scene hierarchy (NiNode, NiLODNode, NiTriShape, NiTriStrips).
@@ -221,6 +268,8 @@ struct NifNode {
 
     // NiLODNode specific
     int32_t lod_data_ref = -1;          // Block index of NiRangeLODData (v >= 10.1.0.0)
+    uint32_t lod_level_count = 0;       // Authored child LOD count, when present
+    uint16_t lod_active_level = 0;      // Active level marker stored by newer Gamebryo files
     Vec3 lod_center;
     std::vector<std::pair<float, float>> lod_ranges; // (near, far) pairs
 };
@@ -332,10 +381,10 @@ struct NifControlledBlock {
 };
 
 // NiControllerSequence: animation clip definition.
-// Stores all bone/property animation links for one animation clip.
-// Verified field order: NiObjectNET, num_controlled_blocks, controlled_blocks[],
-// weight, text_keys_ref, cycle_type, frequency, start_time, stop_time,
-// manager_ref, accum_root_name. (nif.xml NiControllerSequence, v20.3.0.9)
+// LU KF files use a NiSequence-derived payload, not the full nif.xml
+// NiObjectNET header at the start of NiControllerSequence. The parser preserves
+// the resolved clip name, target links, timing, and text-key refs used by
+// animation consumers.
 struct NifControllerSequence {
     std::string name;
     uint32_t num_controlled_blocks = 0;
@@ -429,6 +478,13 @@ struct NifFile {
     std::vector<NifTextureRef> textures;
     std::vector<NifTexturingProperty> texturing_properties;
     std::vector<NifAlphaProperty> alpha_properties;
+    // Authored NiRangeLODData blocks, used by render extraction to annotate
+    // meshes with their file-provided LOD distance bands.
+    std::vector<NifRangeLODData> range_lod_data;
+    // Authored skinning blocks. These are parser data only; pose evaluation and
+    // GPU upload policy live in consumers.
+    std::vector<NifSkinInstance> skin_instances;
+    std::vector<NifSkinData> skin_data;
 
     // Resolves a node's base-slot texture filename by walking node.properties[] ->
     // NiTexturingProperty (matched by block_index) -> base_texture_source_ref ->

@@ -31,7 +31,18 @@ struct NifRenderVertex {
     float position[3] = {0, 0, 0};
     float normal[3] = {0, 1, 0};
     float uv[2] = {0, 0};
+    // Second authored UV channel when present; falls back to uv for consumers
+    // that need stable texture coordinate data.
+    float uv2[2] = {0, 0};
     float color[4] = {1, 1, 1, 1};
+};
+
+// One authored NiSkinData influence for a render vertex. This intentionally
+// preserves bone indices relative to the mesh's NifSkinInstance bone list;
+// renderers decide how many weights to upload or normalize.
+struct NifRenderSkinInfluence {
+    uint16_t bone_index = 0;
+    float weight = 0.0f;
 };
 
 struct NifRenderMaterial {
@@ -41,6 +52,12 @@ struct NifRenderMaterial {
     float specular[4] = {0.0f, 0.0f, 0.0f, 10.0f};
     float emissive[3] = {0.0f, 0.0f, 0.0f};
     std::string diffuse_texture;
+    // Additional NiTexturingProperty texture slots. These are authored asset
+    // references only; shader-specific meaning remains the consumer's job.
+    std::string dark_texture;
+    std::string detail_texture;
+    std::string gloss_texture;
+    std::string glow_texture;
     // Raw NiAlphaProperty state. Consumers decide how these bits map to a
     // render API's blend/test state; this parser only preserves authored data.
     bool has_alpha_property = false;
@@ -55,6 +72,25 @@ struct NifRenderMesh {
     std::string name;
     uint32_t source_mesh_block = 0;
     uint32_t source_node_block = 0;
+    // True when the source NiTriShapeData/NiTriStripsData contained authored
+    // vertex colors, independent of whether a renderer chooses to use them.
+    bool has_vertex_colors = false;
+    // LOD metadata is inherited from the closest NiLODNode parent and carries
+    // the file-authored distance band without making visibility decisions here.
+    bool has_lod_range = false;
+    uint32_t lod_parent_block = 0;
+    uint32_t lod_level = 0;
+    float lod_near = 0.0f;
+    float lod_far = 0.0f;
+    float lod_center[3] = {0.0f, 0.0f, 0.0f};
+    // Skinning metadata is copied from NiSkinInstance/NiSkinData so animation
+    // importers can bind meshes to skeletons without reparsing raw NIF blocks.
+    bool is_skinned = false;
+    uint32_t skin_instance_block = 0;
+    int32_t skeleton_root_block = -1;
+    std::vector<int32_t> skin_bone_node_blocks;
+    std::vector<std::string> skin_bone_names;
+    std::vector<std::vector<NifRenderSkinInfluence>> vertex_influences;
 };
 
 struct NifRenderExtractionResult {

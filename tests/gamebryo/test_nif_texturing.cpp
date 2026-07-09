@@ -136,6 +136,7 @@ TEST(NifTexturing, DecalThresholdsUseVersion20_2_0_5Rule) {
 
     ASSERT_EQ(nif.texturing_properties.size(), 1u);
     EXPECT_EQ(nif.texturing_properties[0].base_texture_source_ref, 0);
+    EXPECT_EQ(nif.texturing_properties[0].dark_texture_source_ref, 0);
 }
 
 // ResolveBaseTextureFilename walks node.properties[] -> NiTexturingProperty (by block_index) ->

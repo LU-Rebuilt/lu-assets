@@ -581,23 +581,23 @@ TEST(NIF, ParseNiFloatInterpolatorAndData) {
 std::vector<uint8_t> build_kf_like_nif() {
     // Block 0: NiControllerSequence
     NifBuilder b0;
-    // NiObjectNET: name_idx=0 ("idle"), no extra data, controller=-1
-    b0.s32(0); b0.u32(0); b0.s32(-1);
+    // LU NiControllerSequence starts with the sequence name, not full NiObjectNET.
+    b0.s32(0); // name_idx=0 ("idle")
     // num_controlled_blocks
     b0.u32(1);
     // Controlled block for v20.3.0.9 (>= 10.1.0.6 and >= 20.1.0.3):
-    //   interpolator_ref, controller_ref, priority, then 5 string-table indices
-    b0.s32(-1);  // interpolator_ref
+    //   controller_ref, interpolator_ref, priority, then 4 string-table indices
     b0.s32(-1);  // controller_ref
-    b0.u8(0);    // priority
-    b0.s32(-1);  // node_name (string table idx, -1 = empty)
+    b0.s32(2);   // interpolator_ref -> block 2
+    b0.s32(0);   // priority
+    b0.s32(1);   // node_name (string table idx 1 = "Scene Root")
     b0.s32(-1);  // property_type
-    b0.s32(-1);  // controller_type
+    b0.s32(4);   // controller_type = "NiTransformController"
     b0.s32(-1);  // controller_id
-    b0.s32(-1);  // interpolator_id
     // Sequence-level fields
+    b0.s32(-1);    // unknown/palette ref
     b0.f32(1.0f);  // weight
-    b0.s32(-1);    // text_keys_ref
+    b0.s32(1);     // text_keys_ref -> block 1
     b0.u32(0);     // cycle_type
     b0.f32(1.0f);  // frequency
     b0.f32(0.0f);  // start_time
@@ -606,6 +606,7 @@ std::vector<uint8_t> build_kf_like_nif() {
     b0.s32(-1);
     // accum root name (string table idx 1 = "Scene Root")
     b0.s32(1);
+    b0.s32(64);     // string palette/state
     uint32_t sz0 = static_cast<uint32_t>(b0.data.size());
 
     // Block 1: NiTextKeyExtraData
@@ -632,7 +633,7 @@ std::vector<uint8_t> build_kf_like_nif() {
 
     NifBuilder b;
     write_header(b,
-        {"idle", "Scene Root", "TextKeys", "start"},
+        {"idle", "Scene Root", "TextKeys", "start", "NiTransformController"},
         {"NiControllerSequence", "NiTextKeyExtraData",
          "NiTransformInterpolator", "NiTransformData"},
         {0, 1, 2, 3},
@@ -911,6 +912,9 @@ TEST(NIF, NifNodeNewFieldDefaults) {
     EXPECT_TRUE(node.material_name_indices.empty());
     EXPECT_TRUE(node.material_extra_data_refs.empty());
     EXPECT_EQ(node.active_material, -1);
+    EXPECT_EQ(node.lod_data_ref, -1);
+    EXPECT_EQ(node.lod_level_count, 0u);
+    EXPECT_EQ(node.lod_active_level, 0u);
 }
 
 TEST(NIF, RenderExtractionComposesParentTransforms) {
@@ -1008,6 +1012,149 @@ TEST(NIF, RenderExtractionIncludesAlphaPropertyState) {
     EXPECT_TRUE(extracted.meshes[0].material.has_alpha_property);
     EXPECT_EQ(extracted.meshes[0].material.alpha_flags, 0x0001u);
     EXPECT_EQ(extracted.meshes[0].material.alpha_threshold, 0u);
+}
+
+TEST(NIF, RenderExtractionAppliesRangeLODDataToRenderableChildren) {
+    NifFile nif;
+
+    NifNode lod;
+    lod.name = "LOD";
+    lod.type_name = "NiLODNode";
+    lod.block_index = 0;
+    lod.translation = {10.0f, 0.0f, 0.0f};
+    lod.children = {1, 2};
+    lod.lod_data_ref = 5;
+    lod.lod_level_count = 2;
+
+    NifNode near_node;
+    near_node.name = "Near";
+    near_node.type_name = "NiTriShape";
+    near_node.block_index = 1;
+    near_node.data_ref = 3;
+
+    NifNode far_node;
+    far_node.name = "Far";
+    far_node.type_name = "NiTriShape";
+    far_node.block_index = 2;
+    far_node.data_ref = 4;
+
+    NifMesh near_mesh;
+    near_mesh.block_index = 3;
+    near_mesh.vertices.resize(3);
+    near_mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    near_mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    near_mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    near_mesh.triangles.push_back({0, 1, 2});
+
+    NifMesh far_mesh = near_mesh;
+    far_mesh.block_index = 4;
+
+    NifRangeLODData ranges;
+    ranges.block_index = 5;
+    ranges.center = {1.0f, 2.0f, 3.0f};
+    ranges.ranges = {{0.0f, 75.0f}, {75.0f, 150.0f}};
+
+    nif.nodes = {lod, near_node, far_node};
+    nif.meshes = {near_mesh, far_mesh};
+    nif.range_lod_data = {ranges};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 2u);
+
+    EXPECT_TRUE(extracted.meshes[0].has_lod_range);
+    EXPECT_EQ(extracted.meshes[0].lod_parent_block, 0u);
+    EXPECT_EQ(extracted.meshes[0].lod_level, 0u);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].lod_near, 0.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].lod_far, 75.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].lod_center[0], 11.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].lod_center[1], 2.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[0].lod_center[2], 3.0f);
+
+    EXPECT_TRUE(extracted.meshes[1].has_lod_range);
+    EXPECT_EQ(extracted.meshes[1].lod_parent_block, 0u);
+    EXPECT_EQ(extracted.meshes[1].lod_level, 1u);
+    EXPECT_FLOAT_EQ(extracted.meshes[1].lod_near, 75.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[1].lod_far, 150.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[1].lod_center[0], 11.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[1].lod_center[1], 2.0f);
+    EXPECT_FLOAT_EQ(extracted.meshes[1].lod_center[2], 3.0f);
+}
+
+TEST(NIF, RenderExtractionCarriesSkinInfluences) {
+    NifFile nif;
+
+    NifNode root;
+    root.name = "SkeletonRoot";
+    root.type_name = "NiNode";
+    root.block_index = 0;
+    root.children = {1, 2, 3};
+
+    NifNode bone_a;
+    bone_a.name = "BoneA";
+    bone_a.type_name = "NiNode";
+    bone_a.block_index = 1;
+
+    NifNode bone_b;
+    bone_b.name = "BoneB";
+    bone_b.type_name = "NiNode";
+    bone_b.block_index = 2;
+
+    NifNode mesh_node;
+    mesh_node.name = "SkinnedMesh";
+    mesh_node.type_name = "NiTriShape";
+    mesh_node.block_index = 3;
+    mesh_node.data_ref = 4;
+    mesh_node.skin_instance_ref = 5;
+
+    NifMesh mesh;
+    mesh.block_index = 4;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+
+    NifSkinInstance skin_instance;
+    skin_instance.block_index = 5;
+    skin_instance.data_ref = 6;
+    skin_instance.skeleton_root_ref = 0;
+    skin_instance.bone_refs = {1, 2};
+
+    NifSkinData skin_data;
+    skin_data.block_index = 6;
+    skin_data.bones.resize(2);
+    skin_data.bones[0].weights = {{0, 1.0f}, {1, 0.25f}};
+    skin_data.bones[1].weights = {{1, 0.75f}, {2, 1.0f}};
+
+    nif.nodes = {root, bone_a, bone_b, mesh_node};
+    nif.meshes = {mesh};
+    nif.skin_instances = {skin_instance};
+    nif.skin_data = {skin_data};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    const auto& out = extracted.meshes[0];
+    EXPECT_TRUE(out.is_skinned);
+    EXPECT_EQ(out.skin_instance_block, 5u);
+    EXPECT_EQ(out.skeleton_root_block, 0);
+    ASSERT_EQ(out.skin_bone_node_blocks.size(), 2u);
+    EXPECT_EQ(out.skin_bone_node_blocks[0], 1);
+    EXPECT_EQ(out.skin_bone_node_blocks[1], 2);
+    ASSERT_EQ(out.skin_bone_names.size(), 2u);
+    EXPECT_EQ(out.skin_bone_names[0], "BoneA");
+    EXPECT_EQ(out.skin_bone_names[1], "BoneB");
+    ASSERT_EQ(out.vertex_influences.size(), 3u);
+    ASSERT_EQ(out.vertex_influences[0].size(), 1u);
+    EXPECT_EQ(out.vertex_influences[0][0].bone_index, 0u);
+    EXPECT_FLOAT_EQ(out.vertex_influences[0][0].weight, 1.0f);
+    ASSERT_EQ(out.vertex_influences[1].size(), 2u);
+    EXPECT_EQ(out.vertex_influences[1][0].bone_index, 1u);
+    EXPECT_FLOAT_EQ(out.vertex_influences[1][0].weight, 0.75f);
+    EXPECT_EQ(out.vertex_influences[1][1].bone_index, 0u);
+    EXPECT_FLOAT_EQ(out.vertex_influences[1][1].weight, 0.25f);
+    ASSERT_EQ(out.vertex_influences[2].size(), 1u);
+    EXPECT_EQ(out.vertex_influences[2][0].bone_index, 1u);
+    EXPECT_FLOAT_EQ(out.vertex_influences[2][0].weight, 1.0f);
 }
 
 // ---- Round-trip (nif_write) ----

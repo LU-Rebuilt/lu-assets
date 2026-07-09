@@ -1,6 +1,8 @@
 #include "gamebryo/nif/nif_geometry.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -12,6 +14,14 @@ struct Transform {
     Vec3 translation = {0, 0, 0};
     Quat rotation = {0, 0, 0, 1};
     float scale = 1.0f;
+};
+
+struct LodAssignment {
+    uint32_t parent_block = 0;
+    uint32_t level = 0;
+    float near_distance = 0.0f;
+    float far_distance = 0.0f;
+    Vec3 center;
 };
 
 Vec3 rotate_vec(const Quat& q, const Vec3& v) {
@@ -122,6 +132,13 @@ const T* find_by_block(const std::unordered_map<uint32_t, const T*>& by_block, i
     return it == by_block.end() ? nullptr : it->second;
 }
 
+std::string texture_filename(
+    const std::unordered_map<uint32_t, const NifTextureRef*>& textures,
+    int32_t texture_ref) {
+    const NifTextureRef* tex = find_by_block(textures, texture_ref);
+    return tex && tex->use_external ? tex->filename : std::string{};
+}
+
 NifRenderMaterial build_material_for_node(
     const NifNode& node,
     const std::unordered_map<uint32_t, const NifMaterial*>& materials,
@@ -160,10 +177,11 @@ NifRenderMaterial build_material_for_node(
     }
 
     if (tex_prop) {
-        const NifTextureRef* tex = find_by_block(textures, tex_prop->base_texture_source_ref);
-        if (tex) {
-            out.diffuse_texture = tex->filename;
-        }
+        out.diffuse_texture = texture_filename(textures, tex_prop->base_texture_source_ref);
+        out.dark_texture = texture_filename(textures, tex_prop->dark_texture_source_ref);
+        out.detail_texture = texture_filename(textures, tex_prop->detail_texture_source_ref);
+        out.gloss_texture = texture_filename(textures, tex_prop->gloss_texture_source_ref);
+        out.glow_texture = texture_filename(textures, tex_prop->glow_texture_source_ref);
     }
 
     const NifAlphaProperty* alpha = nullptr;
@@ -179,6 +197,80 @@ NifRenderMaterial build_material_for_node(
     }
 
     return out;
+}
+
+void assign_lod_to_descendants(
+    uint32_t block,
+    const LodAssignment& assignment,
+    const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
+    std::unordered_map<uint32_t, LodAssignment>& lod_by_node,
+    std::unordered_set<uint32_t>& visiting) {
+
+    if (!visiting.insert(block).second) return;
+
+    auto node_it = node_by_block.find(block);
+    if (node_it == node_by_block.end()) {
+        visiting.erase(block);
+        return;
+    }
+
+    lod_by_node[block] = assignment;
+    for (int32_t child_ref : node_it->second->children) {
+        if (child_ref < 0) continue;
+        assign_lod_to_descendants(
+            static_cast<uint32_t>(child_ref), assignment, node_by_block, lod_by_node, visiting);
+    }
+
+    visiting.erase(block);
+}
+
+void populate_skinning(
+    const NifNode& node,
+    size_t vertex_count,
+    const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
+    const std::unordered_map<uint32_t, const NifSkinInstance*>& skin_instances,
+    const std::unordered_map<uint32_t, const NifSkinData*>& skin_data,
+    NifRenderMesh& out) {
+
+    const NifSkinInstance* skin = find_by_block(skin_instances, node.skin_instance_ref);
+    if (!skin) return;
+
+    const NifSkinData* data = find_by_block(skin_data, skin->data_ref);
+    if (!data) return;
+
+    out.is_skinned = true;
+    out.skin_instance_block = skin->block_index;
+    out.skeleton_root_block = skin->skeleton_root_ref;
+    out.skin_bone_node_blocks = skin->bone_refs;
+    out.skin_bone_names.reserve(skin->bone_refs.size());
+    for (int32_t bone_ref : skin->bone_refs) {
+        std::string name;
+        if (bone_ref >= 0) {
+            auto bone_it = node_by_block.find(static_cast<uint32_t>(bone_ref));
+            if (bone_it != node_by_block.end()) name = bone_it->second->name;
+        }
+        out.skin_bone_names.push_back(std::move(name));
+    }
+
+    out.vertex_influences.resize(vertex_count);
+    const size_t bone_count = std::min(skin->bone_refs.size(), data->bones.size());
+    for (size_t bone_index = 0; bone_index < bone_count; ++bone_index) {
+        const NifSkinBoneData& bone = data->bones[bone_index];
+        for (const NifSkinWeight& weight : bone.weights) {
+            if (weight.vertex_index >= vertex_count || weight.weight <= 0.0f) continue;
+            out.vertex_influences[weight.vertex_index].push_back({
+                static_cast<uint16_t>(bone_index),
+                weight.weight
+            });
+        }
+    }
+
+    for (auto& influences : out.vertex_influences) {
+        std::sort(influences.begin(), influences.end(),
+            [](const NifRenderSkinInfluence& a, const NifRenderSkinInfluence& b) {
+                return a.weight > b.weight;
+            });
+    }
 }
 
 } // namespace
@@ -275,7 +367,54 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
         alpha_by_block[alpha.block_index] = &alpha;
     }
 
+    std::unordered_map<uint32_t, const NifRangeLODData*> range_lod_by_block;
+    for (const auto& range_data : nif.range_lod_data) {
+        range_lod_by_block[range_data.block_index] = &range_data;
+    }
+
+    std::unordered_map<uint32_t, const NifSkinInstance*> skin_instance_by_block;
+    for (const auto& skin : nif.skin_instances) {
+        skin_instance_by_block[skin.block_index] = &skin;
+    }
+
+    std::unordered_map<uint32_t, const NifSkinData*> skin_data_by_block;
+    for (const auto& skin : nif.skin_data) {
+        skin_data_by_block[skin.block_index] = &skin;
+    }
+
     std::unordered_map<uint32_t, Transform> world_by_block;
+    std::unordered_map<uint32_t, LodAssignment> lod_by_node;
+
+    for (const auto& lod_node : nif.nodes) {
+        if (lod_node.type_name != "NiLODNode") continue;
+
+        const NifRangeLODData* range_data = find_by_block(range_lod_by_block, lod_node.lod_data_ref);
+        const auto& ranges = range_data ? range_data->ranges : lod_node.lod_ranges;
+        if (ranges.empty()) continue;
+
+        Vec3 center = range_data ? range_data->center : lod_node.lod_center;
+        std::unordered_set<uint32_t> visiting_transform;
+        Transform lod_world = compute_world_transform(
+            lod_node, node_by_block, parent_by_block, world_by_block, visiting_transform);
+        Vec3 world_center = transform_point(lod_world, center);
+
+        const size_t count = std::min(lod_node.children.size(), ranges.size());
+        for (size_t level = 0; level < count; ++level) {
+            int32_t child_ref = lod_node.children[level];
+            if (child_ref < 0) continue;
+
+            LodAssignment assignment;
+            assignment.parent_block = lod_node.block_index;
+            assignment.level = static_cast<uint32_t>(level);
+            assignment.near_distance = ranges[level].first;
+            assignment.far_distance = ranges[level].second;
+            assignment.center = world_center;
+
+            std::unordered_set<uint32_t> visiting_lod;
+            assign_lod_to_descendants(
+                static_cast<uint32_t>(child_ref), assignment, node_by_block, lod_by_node, visiting_lod);
+        }
+    }
 
     for (const auto& node : nif.nodes) {
         // A renderable mesh is defined by a scene node referencing geometry.
@@ -296,11 +435,26 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
         out.name = node.name.empty() ? "NIF Mesh" : node.name;
         out.source_mesh_block = src.block_index;
         out.source_node_block = node.block_index;
+        out.has_vertex_colors = src.has_vertex_colors;
+        auto lod_it = lod_by_node.find(node.block_index);
+        if (lod_it != lod_by_node.end()) {
+            out.has_lod_range = true;
+            out.lod_parent_block = lod_it->second.parent_block;
+            out.lod_level = lod_it->second.level;
+            out.lod_near = lod_it->second.near_distance;
+            out.lod_far = lod_it->second.far_distance;
+            out.lod_center[0] = lod_it->second.center.x;
+            out.lod_center[1] = lod_it->second.center.y;
+            out.lod_center[2] = lod_it->second.center.z;
+        }
         out.material = build_material_for_node(
             node, material_by_block, texturing_by_block, texture_by_block, alpha_by_block);
+        populate_skinning(
+            node, src.vertices.size(), node_by_block, skin_instance_by_block, skin_data_by_block, out);
 
         out.vertices.reserve(src.vertices.size());
-        for (const auto& v : src.vertices) {
+        for (size_t vertex_index = 0; vertex_index < src.vertices.size(); ++vertex_index) {
+            const auto& v = src.vertices[vertex_index];
             NifRenderVertex rv;
             Vec3 p = transform_point(transform, v.position);
             Vec3 n = rotate_vec(transform.rotation, v.normal);
@@ -313,6 +467,13 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
             rv.normal[2] = n.z;
             rv.uv[0] = v.u;
             rv.uv[1] = v.v;
+            if (!src.extra_uv_sets.empty() && vertex_index < src.extra_uv_sets[0].size()) {
+                rv.uv2[0] = src.extra_uv_sets[0][vertex_index].u;
+                rv.uv2[1] = src.extra_uv_sets[0][vertex_index].v;
+            } else {
+                rv.uv2[0] = v.u;
+                rv.uv2[1] = v.v;
+            }
             rv.color[0] = v.r;
             rv.color[1] = v.g;
             rv.color[2] = v.b;
