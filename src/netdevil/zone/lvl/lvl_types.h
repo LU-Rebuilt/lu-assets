@@ -196,12 +196,21 @@ struct LvlParticle {
 
 // ── Top-level file ─────────────────────────────────────────────────────────────
 
-// Old (pre-CHNK) files only: axis-less environment volume — position + LDF config
-// (friction, interaction_distance, soundFalloffFar, ...). The chunked format dropped
-// this section; nothing equivalent exists in CHNK files.
+// Old (pre-CHNK) files only: axis-less environment volume. The chunked format dropped
+// this section entirely; nothing equivalent exists in CHNK files. Two on-disk shapes,
+// keyed by the same has_revision_field boundary as the file header (see LvlFile):
+//   version >= 36 (retail): position + LDF config string (friction, interaction_distance,
+//                  soundFalloffFar, ...) as u32 char_count + UTF-16LE, same encoding as
+//                  object configs.
+//   version < 36 (leaked pre-release, 1 attested sample with non-empty blocks): position
+//                  + a fixed 260-WCHAR (520-byte) null-padded ambient-sound-name buffer —
+//                  no length prefix, no LDF key=type:value encoding, just a bare name
+//                  (e.g. "amb_birds_heavy_piratemap03"). 260 matches Win32 MAX_PATH,
+//                  suggesting this predates the switch to a generic LDF config string.
 struct LvlEnvBlock {
     Vec3 position;
-    std::vector<LdfEntry> config;
+    std::vector<LdfEntry> config;       // version >= 36 only
+    std::string old_name;               // version < 36 only (fixed 260-WCHAR buffer)
 };
 
 struct LvlFile {
@@ -209,10 +218,26 @@ struct LvlFile {
     uint32_t revision = 0;          // Build revision from fib chunk
 
     // Old pre-chunked container (no CHNK framing; shipped alongside chunked files even
-    // in 1.10.64). Layout: u16 version ×2, u8, u32 revision, then lighting/skydome/
-    // editor(v>=37)/objects/env-blocks/particles laid out sequentially.
+    // in 1.10.64). Layout: u16 version ×2, then lighting/skydome/editor(v>=37)/objects/
+    // env-blocks/particles laid out sequentially. Every RETAIL sample (versions 36-43,
+    // 616 files) has a u8 + u32 revision between the version pair and the lighting data.
+    // A small corpus of pre-release LEAKED files (versions 31-34, absent from every
+    // retail client tree) has a shorter header with no discoverable format-version
+    // pattern in any Ghidra-reachable binary (this predates any client build we have
+    // Ghidra RE access to) — confirmed empirically byte-for-byte, by parsing the fields
+    // that follow (ambient/specular/fog colors, world-space positions) and checking which
+    // header size produces sane values instead of denormalized-float garbage:
+    //   version == 31:        no old_unknown_byte, no revision (0 extra bytes)
+    //   version 32-35:        old_unknown_byte present (always 0 in every sample), but
+    //                         no revision field (1 extra byte, not 5) — only 32/33/34
+    //                         are attested in the corpus, no version-35 sample exists
+    //   version >= 36:        both fields present (5 extra bytes) — matches retail;
+    //                         every leaked sample at 36-40 also round-trips under this
+    //                         rule, so the boundary is exactly the retail/leak split
     bool old_format = false;
     uint8_t old_unknown_byte = 0;   // header byte after the version pair; 0 in all files
+    bool has_old_unknown_byte = true;  // false only for the leaked version==31 samples
+    bool has_revision_field = true;    // false for leaked versions 31-33 (see above)
     std::vector<LvlEnvBlock> old_env_blocks;
 
     LvlEnvironmentData environment;  // From chunk 2000 (may be empty/default)

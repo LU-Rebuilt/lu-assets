@@ -183,8 +183,8 @@ static std::vector<uint8_t> write_old_lvl(const LvlFile& lvl) {
 
     w.write_u16(static_cast<uint16_t>(lvl.version));
     w.write_u16(static_cast<uint16_t>(lvl.version));
-    w.write_u8(lvl.old_unknown_byte);
-    w.write_u32(lvl.revision);
+    if (lvl.has_old_unknown_byte) w.write_u8(lvl.old_unknown_byte);
+    if (lvl.has_revision_field)   w.write_u32(lvl.revision);
 
     write_lighting(w, lvl.environment.lighting, lvl.version);
     write_skydome(w, lvl.environment.skydome, lvl.version);
@@ -200,7 +200,16 @@ static std::vector<uint8_t> write_old_lvl(const LvlFile& lvl) {
     w.write_u32(static_cast<uint32_t>(lvl.old_env_blocks.size()));
     for (const LvlEnvBlock& block : lvl.old_env_blocks) {
         write_vec3(w, block.position);
-        write_object_config(w, block.config);
+        if (lvl.has_revision_field) {
+            write_object_config(w, block.config);
+        } else {
+            // Fixed 260-WCHAR (520-byte) null-padded name buffer — see lvl_types.h.
+            std::vector<uint8_t> buf(520, 0);
+            for (size_t c = 0; c < block.old_name.size() && c * 2 + 1 < buf.size(); ++c) {
+                buf[c * 2] = static_cast<uint8_t>(block.old_name[c]);
+            }
+            w.write_bytes(buf.data(), buf.size());
+        }
     }
 
     if (lvl.has_particles) {

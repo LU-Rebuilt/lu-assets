@@ -345,10 +345,12 @@ static LvlParticle parse_particle(BinaryReader& r, uint32_t version) {
 
 // ── Main parser ───────────────────────────────────────────────────────────────
 
-// Old pre-chunked container: u16 version twice, u8, u32 revision, then the chunk
-// 2000/2001/2002 payloads laid out sequentially (no offsets), plus an env-block section
-// between objects and particles that the chunked format dropped. Layout verified to
-// exact-EOF against 616 shipped files (versions 31-43) across every client dump.
+// Old pre-chunked container: u16 version twice, then (version-gated, see lvl_types.h)
+// u8 old_unknown_byte + u32 revision, then the chunk 2000/2001/2002 payloads laid out
+// sequentially (no offsets), plus an env-block section between objects and particles
+// that the chunked format dropped. Layout verified to exact-EOF against 616 shipped
+// files (versions 36-43) across every client dump, plus 9 leaked pre-release files
+// (versions 31-34) with a shorter header.
 static LvlFile parse_old_lvl(std::span<const uint8_t> data) {
     BinaryReader r(data);
     LvlFile lvl;
@@ -361,8 +363,11 @@ static LvlFile parse_old_lvl(std::span<const uint8_t> data) {
     }
     lvl.version = header_version;
     lvl.env_data_version = data_version;
-    lvl.old_unknown_byte = r.read_u8();
-    lvl.revision = r.read_u32();
+
+    lvl.has_old_unknown_byte = lvl.version >= 32;
+    lvl.has_revision_field   = lvl.version >= 36;
+    if (lvl.has_old_unknown_byte) lvl.old_unknown_byte = r.read_u8();
+    if (lvl.has_revision_field)   lvl.revision = r.read_u32();
 
     lvl.environment.lighting = parse_lighting_seq(r, lvl.version);
     lvl.environment.skydome  = parse_skydome_seq(r, lvl.version);
@@ -386,13 +391,25 @@ static LvlFile parse_old_lvl(std::span<const uint8_t> data) {
     for (uint32_t i = 0; i < num_blocks; ++i) {
         LvlEnvBlock block;
         block.position = read_vec3(r);
-        std::string cfg = read_u4_wstr(r);
-        if (!cfg.empty()) block.config = ldf_parse(cfg);
+        if (lvl.has_revision_field) {
+            std::string cfg = read_u4_wstr(r);
+            if (!cfg.empty()) block.config = ldf_parse(cfg);
+        } else {
+            // Fixed 260-WCHAR (520-byte) null-padded name buffer — see lvl_types.h.
+            auto buf = r.read_bytes(520);
+            std::string name;
+            for (size_t c = 0; c + 1 < buf.size(); c += 2) {
+                uint16_t wc = static_cast<uint16_t>(buf[c] | (buf[c + 1] << 8));
+                if (wc == 0) break;
+                name += static_cast<char>(wc < 128 ? wc : '?');
+            }
+            block.old_name = std::move(name);
+        }
         lvl.old_env_blocks.push_back(std::move(block));
     }
 
-    // A few dev-era files (e.g. luptario005_1_town.lvl) end right before the particle
-    // section; has_particles records whether the section exists so writes round-trip.
+    // A few dev-era files end right before the particle section; has_particles records
+    // whether the section exists so writes round-trip.
     if (r.remaining() >= 4) {
         uint32_t num_particles = r.read_u32();
         if (num_particles > 100000) throw LvlError("LVL(old): unreasonable particle count");
