@@ -23,6 +23,23 @@ size_t find_header_end(std::span<const uint8_t> data) {
     throw NifError("NIF: could not find header newline");
 }
 
+// Sanity-check a list/array count read from the file before resize()-ing a vector to it.
+// A malformed or divergent-content file can put a huge garbage value in a count field;
+// without this, resize() attempts a multi-gigabyte allocation that isn't a crash but is
+// effectively a hang (observed: several GB/sec of RSS growth, no forward progress) rather
+// than the "block extends past end of file" error the same file throws when truncated
+// right after the same count field — i.e. the eventual out-of-bounds read that would
+// catch this is reached far too late, after the damage (allocation stall) is already
+// done. Since every element needs at least 1 byte on disk, count can never legitimately
+// exceed the file's remaining bytes.
+uint32_t bounded_count(BinaryReader& r, uint32_t count, const char* what) {
+    if (count > r.remaining()) {
+        throw NifError(std::string("NIF: ") + what + " count " + std::to_string(count) +
+                        " exceeds remaining file data");
+    }
+    return count;
+}
+
 // ============================================================================
 // String table resolution
 // ============================================================================
@@ -62,7 +79,7 @@ NiObjectNETResult read_ni_object_net(BinaryReader& r, uint32_t version,
     // Block indices of attached NiExtraData objects (NiStringExtraData, NiTextKeyExtraData, etc.)
     if (version >= 0x0A000100) {
         uint32_t num_extra = r.read_u32();
-        result.extra_data_refs.resize(num_extra);
+        result.extra_data_refs.resize(bounded_count(r, num_extra, "extra_data_refs"));
         for (uint32_t i = 0; i < num_extra; ++i) {
             result.extra_data_refs[i] = r.read_s32();
         }
@@ -153,7 +170,7 @@ void read_ni_av_object(BinaryReader& r, uint32_t version, NifNode& node,
     // Properties (version >= 10.0.1.0): count + array of i32 block refs
     if (version >= 0x0A000100) {
         uint32_t num_props = r.read_u32();
-        node.properties.resize(num_props);
+        node.properties.resize(bounded_count(r, num_props, "properties"));
         for (uint32_t i = 0; i < num_props; ++i) {
             node.properties[i] = r.read_s32();
         }
@@ -177,7 +194,7 @@ NifNode parse_ni_node(BinaryReader& r, uint32_t version,
 
     // Children: count + array of i32 block refs
     uint32_t num_children = r.read_u32();
-    node.children.resize(num_children);
+    node.children.resize(bounded_count(r, num_children, "children"));
     for (uint32_t i = 0; i < num_children; ++i) {
         node.children[i] = r.read_s32();
     }
@@ -185,7 +202,7 @@ NifNode parse_ni_node(BinaryReader& r, uint32_t version,
     // Effects: count + array of i32 block refs.
     // Block indices of attached NiDynamicEffect objects (lights, environment maps, etc.)
     uint32_t num_effects = r.read_u32();
-    node.effect_refs.resize(num_effects);
+    node.effect_refs.resize(bounded_count(r, num_effects, "effect_refs"));
     for (uint32_t i = 0; i < num_effects; ++i) {
         node.effect_refs[i] = r.read_s32();
     }
@@ -220,7 +237,7 @@ NifNode parse_ni_lod_node(BinaryReader& r, uint32_t version,
         node.lod_center.y = r.read_f32();
         node.lod_center.z = r.read_f32();
         uint32_t num_levels = r.read_u32();
-        node.lod_ranges.resize(num_levels);
+        node.lod_ranges.resize(bounded_count(r, num_levels, "lod_ranges"));
         for (uint32_t i = 0; i < num_levels; ++i) {
             node.lod_ranges[i].first = r.read_f32();  // near
             node.lod_ranges[i].second = r.read_f32(); // far
@@ -355,11 +372,11 @@ NifNode parse_ni_tri_shape(BinaryReader& r, uint32_t version,
     // active_material = index into the above arrays (-1 = default).
     if (version >= 0x0A000100) {
         uint32_t num_materials = r.read_u32();
-        node.material_name_indices.resize(num_materials);
+        node.material_name_indices.resize(bounded_count(r, num_materials, "material_name_indices"));
         for (uint32_t i = 0; i < num_materials; ++i) {
             node.material_name_indices[i] = r.read_s32();
         }
-        node.material_extra_data_refs.resize(num_materials);
+        node.material_extra_data_refs.resize(bounded_count(r, num_materials, "material_extra_data_refs"));
         for (uint32_t i = 0; i < num_materials; ++i) {
             node.material_extra_data_refs[i] = r.read_s32();
         }
@@ -395,7 +412,7 @@ void parse_geom_data_header(BinaryReader& r, uint32_t version, NifMesh& mesh) {
 
     // Vertices
     bool has_vertices = r.read_bool();
-    mesh.vertices.resize(num_verts);
+    mesh.vertices.resize(bounded_count(r, num_verts, "vertices"));
     if (has_vertices) {
         for (uint16_t i = 0; i < num_verts; ++i) {
             mesh.vertices[i].position.x = r.read_f32();
@@ -502,7 +519,7 @@ NifMesh parse_tri_shape_data(BinaryReader& r, uint32_t version) {
     // Triangle indices
     bool has_triangles = r.read_bool();
     if (has_triangles && num_triangles > 0) {
-        mesh.triangles.resize(num_triangles);
+        mesh.triangles.resize(bounded_count(r, num_triangles, "triangles"));
         for (uint16_t i = 0; i < num_triangles; ++i) {
             mesh.triangles[i].a = r.read_u16();
             mesh.triangles[i].b = r.read_u16();
@@ -513,10 +530,10 @@ NifMesh parse_tri_shape_data(BinaryReader& r, uint32_t version) {
     // Match groups (version >= 10.0.1.0)
     if (version >= 0x0A000100) {
         uint16_t num_match_groups = r.read_u16();
-        mesh.match_groups.resize(num_match_groups);
+        mesh.match_groups.resize(bounded_count(r, num_match_groups, "match_groups"));
         for (uint16_t mg = 0; mg < num_match_groups; ++mg) {
             uint16_t count = r.read_u16();
-            mesh.match_groups[mg].indices.resize(count);
+            mesh.match_groups[mg].indices.resize(bounded_count(r, count, "match_group indices"));
             for (uint16_t i = 0; i < count; ++i) {
                 mesh.match_groups[mg].indices[i] = r.read_u16();
             }
@@ -894,7 +911,7 @@ NifTextKeyExtraData parse_text_key_extra_data(BinaryReader& r, uint32_t version,
 
     // Number of text keys
     uint32_t num_keys = r.read_u32();
-    result.keys.resize(num_keys);
+    result.keys.resize(bounded_count(r, num_keys, "keys"));
     for (uint32_t i = 0; i < num_keys; ++i) {
         result.keys[i].time = r.read_f32();
         if (version >= 0x14010003) {
@@ -1044,7 +1061,7 @@ NifTransformInterpolator parse_transform_interpolator(BinaryReader& r) {
 // TBC: time + value + tension + bias + continuity)
 void read_float_keys(BinaryReader& r, uint32_t num_keys, uint32_t key_type,
                      std::vector<NifKeyFloat>& keys) {
-    keys.resize(num_keys);
+    keys.resize(bounded_count(r, num_keys, "keys"));
     for (uint32_t i = 0; i < num_keys; ++i) {
         keys[i].time = r.read_f32();
         keys[i].value = r.read_f32();
@@ -1064,7 +1081,7 @@ void read_float_keys(BinaryReader& r, uint32_t num_keys, uint32_t key_type,
 // Read Vec3 keys
 void read_vec3_keys(BinaryReader& r, uint32_t num_keys, uint32_t key_type,
                     std::vector<NifKeyVec3>& keys) {
-    keys.resize(num_keys);
+    keys.resize(bounded_count(r, num_keys, "keys"));
     for (uint32_t i = 0; i < num_keys; ++i) {
         keys[i].time = r.read_f32();
         keys[i].value.x = r.read_f32();
@@ -1091,7 +1108,7 @@ void read_vec3_keys(BinaryReader& r, uint32_t num_keys, uint32_t key_type,
 // Read quaternion keys (LINEAR: time + wxyz, QUADRATIC: time + wxyz only -- no tangents for quats)
 void read_quat_keys(BinaryReader& r, uint32_t num_keys, uint32_t key_type,
                     std::vector<NifKeyQuat>& keys) {
-    keys.resize(num_keys);
+    keys.resize(bounded_count(r, num_keys, "keys"));
     for (uint32_t i = 0; i < num_keys; ++i) {
         keys[i].time = r.read_f32();
         if (key_type != 4) {
@@ -1232,7 +1249,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
 
     // Block type names: u16 count, then u32-length-prefixed strings
     uint16_t num_block_types = r.read_u16();
-    nif.block_types.resize(num_block_types);
+    nif.block_types.resize(bounded_count(r, num_block_types, "block_types"));
     for (uint16_t i = 0; i < num_block_types; ++i) {
         uint32_t len = r.read_u32();
         if (len > 256) throw NifError("NIF: block type name too long");
@@ -1260,7 +1277,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
     // String table: u32 count, u32 max_length, then u32-length-prefixed strings
     uint32_t num_strings = r.read_u32();
     nif.string_table_max_len = r.read_u32(); // max string length (informational, preserved)
-    nif.string_table.resize(num_strings);
+    nif.string_table.resize(bounded_count(r, num_strings, "string_table"));
     for (uint32_t i = 0; i < num_strings; ++i) {
         uint32_t len = r.read_u32();
         if (len > 10000) {
@@ -1277,7 +1294,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
 
     // Groups: u32 count, then u32[count] group sizes
     uint32_t num_groups = r.read_u32();
-    nif.groups.resize(num_groups);
+    nif.groups.resize(bounded_count(r, num_groups, "groups"));
     for (uint32_t i = 0; i < num_groups; ++i) {
         nif.groups[i] = r.read_u32();
     }
@@ -1439,7 +1456,7 @@ NifFile nif_parse(std::span<const uint8_t> data) {
     if (!nif.block_sizes.empty()) {
         uint32_t num_roots = r.read_u32();
         if (num_roots > nif.num_blocks) throw NifError("NIF: unreasonable footer root count");
-        nif.roots.resize(num_roots);
+        nif.roots.resize(bounded_count(r, num_roots, "roots"));
         for (uint32_t i = 0; i < num_roots; ++i) {
             nif.roots[i] = r.read_s32();
         }
