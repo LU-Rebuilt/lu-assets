@@ -85,6 +85,9 @@ std::vector<uint8_t> luz_write(const LuzFile& luz) {
     if (revision > 30) {
         w.write_string8(luz.zone_name);
         w.write_string8(luz.zone_description);
+    } else if (luz.has_zone_name) {
+        // version == 30 exception (see LuzFile::has_zone_name).
+        w.write_string8(luz.zone_name);
     }
 
     if (revision >= 32) {

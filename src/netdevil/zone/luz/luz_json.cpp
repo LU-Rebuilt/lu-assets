@@ -345,7 +345,9 @@ void to_json(json& j, const LuzFile& f) {
         {"scenes", f.scenes},
         {"boundaries", f.boundaries},
         {"raw_path", f.raw_path},
+        {"has_zone_name", f.has_zone_name},
         {"zone_name", f.zone_name},
+        {"has_zone_description", f.has_zone_description},
         {"zone_description", f.zone_description},
         {"transitions", f.transitions},
         {"path_chunk_version", f.path_chunk_version},
@@ -362,7 +364,12 @@ void from_json(const json& j, LuzFile& f) {
     j.at("scenes").get_to(f.scenes);
     f.boundaries = j.value("boundaries", std::vector<LuzBoundary>{});
     f.raw_path = j.value("raw_path", "");
+    // has_zone_name/description default true when absent from older JSON exports (predating
+    // these flags) that came from a version > 30 file — the only case that ever exported a
+    // non-empty zone_name/description before this field existed.
+    f.has_zone_name = j.value("has_zone_name", f.version > 30);
     f.zone_name = j.value("zone_name", "");
+    f.has_zone_description = j.value("has_zone_description", f.version > 30);
     f.zone_description = j.value("zone_description", "");
     f.transitions = j.value("transitions", std::vector<LuzTransition>{});
     f.path_chunk_version = j.value("path_chunk_version", 0u);

@@ -209,6 +209,30 @@ std::vector<uint8_t> build_v40_luz() {
     return b.data;
 }
 
+// Build a version-30 LUZ matching the internal/editor-dump exception: a zone_name
+// string past raw_path despite the runtime client's `revision > 30` gate excluding
+// exactly version 30 (see LuzFile::has_zone_name). No zone_description follows.
+std::vector<uint8_t> build_v30_luz_with_zone_name(const std::string& zone_name) {
+    LuzBuilder b;
+
+    b.u32(30);            // version (== 30, the exception case)
+    // No file_revision (revision <= 35)
+    b.u32(67);            // world_id
+    // No spawn pos/rot (revision <= 37)
+
+    b.u8(1);               // scene_count (u8, revision < 37)
+    // Scene, revision < 30-or->=33 field rules: at revision==30 (in [30,32]) the scene
+    // struct is just the filename — no id/type/name/color.
+    b.str8("Zone.lvl");
+
+    b.u8(0);               // boundaries
+
+    b.str8("Zone.raw");
+    b.str8(zone_name);     // the version-30 exception string
+
+    return b.data;
+}
+
 } // anonymous namespace
 
 // ── Header / scene / zone string tests ────────────────────────────────────────
@@ -361,4 +385,105 @@ TEST(LUZ, ParseVersion40) {
 TEST(LUZ, EmptyDataThrows) {
     std::vector<uint8_t> empty;
     EXPECT_THROW(luz_parse(empty), std::out_of_range);
+}
+
+// ── Round-trip (luz_write) and version-30 zone_name exception ─────────────────
+
+#include "netdevil/zone/luz/luz_writer.h"
+#include "netdevil/zone/luz/luz_json.h"
+
+TEST(LUZ, RoundTripV41ByteIdentical) {
+    auto data = build_v41_luz_with_paths();
+    auto luz = luz_parse(data);
+    EXPECT_EQ(luz_write(luz), data);
+}
+
+TEST(LUZ, RoundTripV40ByteIdentical) {
+    auto data = build_v40_luz();
+    auto luz = luz_parse(data);
+    EXPECT_EQ(luz_write(luz), data);
+}
+
+TEST(LUZ, Version30ExceptionParsesZoneName) {
+    auto data = build_v30_luz_with_zone_name("Gnarled_assetsMIKET");
+    auto luz = luz_parse(data);
+
+    EXPECT_EQ(luz.version, 30u);
+    EXPECT_EQ(luz.raw_path, "Zone.raw");
+    EXPECT_TRUE(luz.has_zone_name);
+    EXPECT_EQ(luz.zone_name, "Gnarled_assetsMIKET");
+    EXPECT_FALSE(luz.has_zone_description);
+    EXPECT_TRUE(luz.zone_description.empty());
+}
+
+TEST(LUZ, Version30ExceptionRoundTripByteIdentical) {
+    auto data = build_v30_luz_with_zone_name("scale_TEST_ASSETS");
+    auto luz = luz_parse(data);
+    EXPECT_EQ(luz_write(luz), data);
+}
+
+TEST(LUZ, Version30WithoutZoneNameRoundTripByteIdentical) {
+    // Ordinary version-30 file with no trailing string at all — has_zone_name must stay
+    // false and luz_write must not fabricate a string where none existed.
+    LuzBuilder b;
+    b.u32(30);
+    b.u32(1);
+    b.u8(1);
+    b.str8("Zone.lvl");
+    b.u8(0);
+    b.str8("Zone.raw");
+    auto data = b.data;
+
+    auto luz = luz_parse(data);
+    EXPECT_FALSE(luz.has_zone_name);
+    EXPECT_EQ(luz_write(luz), data);
+}
+
+TEST(LUZ, Version30TrailingBytesThatArentAStringThrows) {
+    // Trailing data that doesn't decode as exactly one length-prefixed string filling the
+    // rest of the file must be reported as a parse error, not silently absorbed.
+    LuzBuilder b;
+    b.u32(30);
+    b.u32(1);
+    b.u8(1);
+    b.str8("Zone.lvl");
+    b.u8(0);
+    b.str8("Zone.raw");
+    b.u8(200); // claims a 200-byte string but nowhere near that much data follows
+    b.u8(1); b.u8(2); b.u8(3);
+    EXPECT_THROW(luz_parse(b.data), LuzError);
+}
+
+TEST(LUZ, JsonRoundTripPreservesZoneNamePresence) {
+    auto luz = luz_parse(build_v30_luz_with_zone_name("Gnarled_assetsMIKET"));
+    ASSERT_TRUE(luz.has_zone_name);
+
+    nlohmann::json j = luz;
+    auto restored = j.get<lu::assets::LuzFile>();
+
+    EXPECT_TRUE(restored.has_zone_name);
+    EXPECT_EQ(restored.zone_name, "Gnarled_assetsMIKET");
+    EXPECT_FALSE(restored.has_zone_description);
+    EXPECT_EQ(luz_write(restored), luz_write(luz));
+}
+
+TEST(LUZ, JsonRoundTripV41AlwaysHasZoneName) {
+    auto luz = luz_parse(build_v41_luz_with_paths());
+    nlohmann::json j = luz;
+    auto restored = j.get<lu::assets::LuzFile>();
+    EXPECT_EQ(luz_write(restored), luz_write(luz));
+}
+
+TEST(LUZ, JsonWithoutPresenceFlagsDefaultsFromVersion) {
+    // Simulates JSON exported before has_zone_name/has_zone_description existed: a
+    // version > 30 blob with zone_name/description strings but no explicit flags must
+    // still round-trip as present (version > 30 files always carry both on disk).
+    nlohmann::json j = luz_parse(build_v40_luz());
+    j.erase("has_zone_name");
+    j.erase("has_zone_description");
+
+    auto restored = j.get<lu::assets::LuzFile>();
+    EXPECT_TRUE(restored.has_zone_name);
+    EXPECT_TRUE(restored.has_zone_description);
+    EXPECT_EQ(luz_write(restored), build_v40_luz());
 }

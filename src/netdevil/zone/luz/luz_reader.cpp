@@ -166,8 +166,10 @@ LuzFile luz_parse(std::span<const uint8_t> data) {
     }
     if (revision > 30 && r.remaining() >= 1) {
         luz.zone_name = r.read_string8();
+        luz.has_zone_name = true;
         if (r.remaining() >= 1) {
             luz.zone_description = r.read_string8();
+            luz.has_zone_description = true;
         }
     }
 
@@ -370,6 +372,28 @@ LuzFile luz_parse(std::span<const uint8_t> data) {
                 luz.paths.push_back(std::move(path));
             }
         }
+    }
+
+    // version == 30 exception (see LuzFile::has_zone_name): a small number of
+    // internal/editor-dump files carry a zone_name string the runtime client's own
+    // ReadLUZFile (gated on `revision > 30`) would never read at this exact version.
+    // Detected structurally, not by content: the remaining bytes decode as exactly one
+    // length-prefixed string consuming the whole rest of the file.
+    if (luz.version == 30 && !luz.has_zone_name && r.remaining() >= 1) {
+        size_t save_pos = r.pos();
+        uint8_t len = r.read_u8();
+        if (r.remaining() == len) {
+            luz.zone_name = std::string(reinterpret_cast<const char*>(
+                r.read_bytes(len).data()), len);
+            luz.has_zone_name = true;
+        } else {
+            r.seek(save_pos);
+        }
+    }
+
+    if (r.remaining() > 0) {
+        throw LuzError("LUZ: " + std::to_string(r.remaining()) +
+                       " unparsed byte(s) after the last known field");
     }
 
     return luz;

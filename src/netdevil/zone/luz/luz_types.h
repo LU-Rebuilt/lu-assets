@@ -13,12 +13,16 @@ namespace lu::assets {
 
 // LUZ (Zone) file parser — complete format including transition data and path chunks.
 //
-// All client files are version 41. The format is:
+// All shipped runtime files are version 41. The format is:
 //   version u32  →  [file_revision u32]  →  world_id u32  →  spawn_pos/rot
 //   →  scene_count  →  scenes[]  →  boundaries[]
-//   →  raw_path / zone_name / zone_description strings
+//   →  raw_path string  →  [zone_name / zone_description strings, version > 30]
 //   →  transition_data (version >= 32)
 //   →  path_chunk_size u32 + path_chunk (version >= 35)
+//
+// version == 30 exception: a small number of internal/editor map dumps (not from any
+// shipped runtime client) carry a zone_name string at exactly version 30, past where
+// ReadLUZFile's `revision > 30` gate would read one — see LuzFile::has_zone_name.
 //
 // RE sources (legouniverse.exe):
 //   ReadLUZFile          @ 010438a0
@@ -222,9 +226,19 @@ struct LuzFile {
     std::vector<LuzScene>    scenes;
     std::vector<LuzBoundary> boundaries;
 
-    std::string raw_path;          // terrain heightmap file path (.raw)
-    std::string zone_name;         // display name (version > 30)
-    std::string zone_description;  // (version > 30)
+    std::string raw_path;  // terrain heightmap file path (.raw)
+
+    // zone_name/zone_description: normally gated on `version > 30` (legouniverse.exe
+    // 1.10.64's ReadLUZFile — Ghidra RE-verified) and always present together at that
+    // gate. has_zone_name/has_zone_description instead record what this specific file
+    // actually contained, because a handful of internal/editor map dumps carry a
+    // zone_name at exactly version 30 (with no zone_description) that the shipped
+    // runtime client's own gate would never produce or read. Check the has_* flag before
+    // trusting the string; luz_write emits each string iff its flag is set.
+    bool has_zone_name = false;
+    std::string zone_name;
+    bool has_zone_description = false;
+    std::string zone_description;
 
     std::vector<LuzTransition> transitions;  // version >= 32
     uint32_t path_chunk_version = 0;         // version >= 35: path chunk version (rejected if >= 2)
