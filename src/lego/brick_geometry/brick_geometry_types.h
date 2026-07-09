@@ -3,7 +3,6 @@
 #include "netdevil/zone/luz/luz_types.h"
 
 #include <cstdint>
-#include <span>
 #include <vector>
 #include <stdexcept>
 
@@ -19,7 +18,7 @@ namespace lu::assets {
 //     the UV/normal bits swapped/combined incorrectly (verified byte-exact against all
 //     5934 real .g/.g1/.g2 files under res/brickprimitives/).
 
-// Brick geometry (.g) file parser.
+// Brick geometry (.g) file format.
 // 5,892 .g/.g1/.g2 files in brickprimitives/ at 3 LOD levels.
 //
 // Binary format:
@@ -82,7 +81,5 @@ struct BrickGeometry {
     uint32_t tag = 0;                 // 0x08 block
     std::vector<uint8_t> tag_data;     // 0x08 block payload
 };
-
-BrickGeometry brick_geometry_parse(std::span<const uint8_t> data);
 
 } // namespace lu::assets

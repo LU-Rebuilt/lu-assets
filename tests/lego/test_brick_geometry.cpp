@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "lego/brick_geometry/brick_geometry.h"
+#include "lego/brick_geometry/brick_geometry_reader.h"
 #include "lego/brick_geometry/brick_geometry_writer.h"
 
 #include <cstring>

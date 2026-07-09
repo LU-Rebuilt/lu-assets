@@ -7,7 +7,7 @@
 //   - lu-toolbox (github.com/Squareville/lu-toolbox) — assembly pipeline and material color mapping
 
 #include "lego/lxfml/lxfml_types.h"
-#include "lego/brick_geometry/brick_geometry.h"
+#include "lego/brick_geometry/brick_geometry_reader.h"
 #include "lego/brick_assembly/brick_colors.h"
 
 #include <cstdint>

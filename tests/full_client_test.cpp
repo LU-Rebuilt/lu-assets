@@ -14,7 +14,7 @@
 #include "gamebryo/settings/settings_reader.h"
 #include "havok/reader/hkx_reader.h"
 #include "lego/lxfml/lxfml_reader.h"
-#include "lego/brick_geometry/brick_geometry.h"
+#include "lego/brick_geometry/brick_geometry_reader.h"
 #include "microsoft/dds/dds_reader.h"
 #include "microsoft/tga/tga_reader.h"
 #include "forkparticle/psb/psb_reader.h"

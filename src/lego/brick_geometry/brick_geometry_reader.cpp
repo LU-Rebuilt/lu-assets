@@ -1,4 +1,4 @@
-#include "lego/brick_geometry/brick_geometry.h"
+#include "lego/brick_geometry/brick_geometry_reader.h"
 #include "common/binary_reader/binary_reader.h"
 #include <string>
 
