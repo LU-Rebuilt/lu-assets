@@ -6,8 +6,9 @@
 //
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
-// (brick geometry), and ForkParticle effect scripts (content-sniffed under a plain ".txt"
-// extension).
+// (brick geometry), .hkx (binary packfile only — tagged-binary/XML HKX variants are
+// skipped, not round-tripped), and ForkParticle effect scripts (content-sniffed under a
+// plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -48,6 +49,8 @@
 #include "lego/brick_geometry/brick_geometry_writer.h"
 #include "lego/lxfml/lxfml_reader.h"
 #include "lego/lxfml/lxfml_writer.h"
+#include "havok/packfile/hkx_packfile_reader.h"
+#include "havok/packfile/hkx_packfile_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -190,6 +193,53 @@ void check_sd0(const fs::path& path, FormatStats& stats) {
     try {
         auto decompressed = lu::assets::sd0_decompress(data);
         out = lu::assets::sd0_compress(decompressed);
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    if (out == data) {
+        stats.ok++;
+        return;
+    }
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
+    }
+}
+
+// .hkx ships in three format variants sharing one extension: binary packfile (magic
+// 0x57E0E057 0x10C0C010, round-tripped here), tagged binary (magic 0xCAB00D1E
+// 0xD011FACE), and XML. Only packfile is in scope for this project's round-trip
+// coverage; tagged-binary/XML files must be recognized and SKIPPED rather than fed to
+// the packfile reader (which would just throw a bad-magic error and get miscounted as a
+// parse failure). That "identify by magic, skip non-matching, round-trip the rest" shape
+// doesn't fit the generic check_file() dispatcher (which mismatches, rather than skips,
+// on wrong magic when an extension maps 1:1 to a format), so — like check_sd0() above —
+// .hkx gets its own function.
+void check_hkx_packfile(const fs::path& path, FormatStats& stats) {
+    auto data = read_file(path);
+    if (data.empty()) return;
+
+    static constexpr uint8_t packfile_magic[8] = {
+        0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10
+    };
+    if (data.size() < 8 || memcmp(data.data(), packfile_magic, 8) != 0) {
+        // Tagged-binary (0xCAB00D1E) or XML HKX — out of scope, not a failure.
+        stats.skipped++;
+        return;
+    }
+
+    std::vector<uint8_t> out;
+    try {
+        auto pf = lu::assets::hkx_packfile_parse(data);
+        out = lu::assets::hkx_packfile_write(pf);
     } catch (const std::exception& ex) {
         stats.parse_fail++;
         if (stats.messages.size() < 10) {
@@ -493,6 +543,10 @@ int main(int argc, char* argv[]) {
             }
             if (ext == ".lxfml") {
                 check_lxfml(e.path(), stats[".lxfml"]);
+                continue;
+            }
+            if (ext == ".hkx") {
+                check_hkx_packfile(e.path(), stats[".hkx"]);
                 continue;
             }
             // ForkParticle effect scripts ship as plain ".txt" (no distinguishing
