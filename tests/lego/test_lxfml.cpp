@@ -245,17 +245,137 @@ TEST(LXFML, SceneParsed) {
     EXPECT_NEAR(g.parts[0].ty, -0.96f, 1e-4f);
 }
 
-TEST(LXFML, GroupSystemsAndBuildingInstructions) {
+TEST(LXFML, GroupSystemsEmptyAndBuildingInstructionsSelfClosed) {
     const char* xml = R"(<?xml version="1.0"?>
 <LXFML versionMajor="5" versionMinor="0">
   <Bricks/>
   <GroupSystems>
-    <GroupSystem/>
-    <GroupSystem/>
+    <GroupSystem></GroupSystem>
+    <GroupSystem></GroupSystem>
   </GroupSystems>
   <BuildingInstructions/>
 </LXFML>)";
     auto lxfml = lxfml_parse(to_bytes(xml));
-    EXPECT_EQ(lxfml.group_system_count, 2u);
-    EXPECT_TRUE(lxfml.has_building_instructions);
+    EXPECT_TRUE(lxfml.has_group_systems);
+    ASSERT_EQ(lxfml.group_systems.size(), 2u);
+    EXPECT_TRUE(lxfml.group_systems[0].empty());
+    EXPECT_TRUE(lxfml.group_systems[1].empty());
+    EXPECT_EQ(lxfml.building_instructions, LxfmlFile::ElementShape::SelfClosed);
+}
+
+TEST(LXFML, BuildingInstructionsOpenEmptyShape) {
+    const char* xml = "<?xml version=\"1.0\"?>\n"
+        "<LXFML versionMajor=\"5\" versionMinor=\"0\">\r\n"
+        "  <Bricks/>\r\n"
+        "  <BuildingInstructions>\r\n  </BuildingInstructions>\r\n"
+        "</LXFML>";
+    auto lxfml = lxfml_parse(to_bytes(xml));
+    EXPECT_EQ(lxfml.building_instructions, LxfmlFile::ElementShape::OpenEmpty);
+}
+
+TEST(LXFML, BuildingInstructionsAbsent) {
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML versionMajor="5" versionMinor="0">
+  <Bricks/>
+</LXFML>)";
+    auto lxfml = lxfml_parse(to_bytes(xml));
+    EXPECT_EQ(lxfml.building_instructions, LxfmlFile::ElementShape::Absent);
+    EXPECT_FALSE(lxfml.has_group_systems);
+}
+
+TEST(LXFML, GroupSystemsWithRealGroupData) {
+    // 82/1966 real client files have actual <Group> grouping data inside GroupSystems,
+    // contrary to the old "always empty" assumption.
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML versionMajor="5" versionMinor="0">
+  <Bricks/>
+  <GroupSystems>
+    <GroupSystem>
+      <Group transformation="1,0,0,0,1,0,0,0,1,0,0,0" pivot="0,0,0" partRefs="1,2,3">
+        <Group transformation="1,0,0,0,1,0,0,0,1,0,0,0" pivot="0,0,0" partRefs="4,5"/>
+      </Group>
+    </GroupSystem>
+  </GroupSystems>
+</LXFML>)";
+    auto lxfml = lxfml_parse(to_bytes(xml));
+    ASSERT_EQ(lxfml.group_systems.size(), 1u);
+    ASSERT_EQ(lxfml.group_systems[0].size(), 1u);
+    const auto& g = lxfml.group_systems[0][0];
+    EXPECT_FLOAT_EQ(g.transformation[9], 0.0f);
+    ASSERT_EQ(g.part_refs.size(), 3u);
+    EXPECT_EQ(g.part_refs[0], 1);
+    EXPECT_EQ(g.part_refs[2], 3);
+    ASSERT_EQ(g.children.size(), 1u);
+    ASSERT_EQ(g.children[0].part_refs.size(), 2u);
+    EXPECT_EQ(g.children[0].part_refs[1], 5);
+}
+
+TEST(LXFML, V2ModelsFormatParsed) {
+    // v2 LDD-native format: rotPiv* quaternion, per-brick assembly grouping,
+    // SubBrick material overrides. Alphabetical attribute order in real files.
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML majorVersion="2" minorVersion="1">
+  <Models>
+    <Model angle="0.00000000" ax="0.00000000" ay="0.00000000" az="1.00000000" modelName="TESTMODEL" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="0.00000000" z="0.00000000">
+      <Group angle="0.00000000" ax="0.00000000" ay="0.00000000" az="1.00000000" groupID="0" groupName="TestGroup" groupRefID="0" objectUniqueID="0" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="0.00000000" z="0.00000000">
+        <Brick angle="90.00000000" ax="0.00000000" ay="1.00000000" az="0.00000000" brickID="3666" brickName="test_brick" brickRefID="0" materialID="192" objectUniqueID="12234" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="-0.32000000" z="0.00000000">
+          <SubBrick materialID="192" surfaceID="0"/>
+        </Brick>
+      </Group>
+    </Model>
+  </Models>
+  <BuildingInstructions/>
+  <Prepacks/>
+</LXFML>)";
+    auto lxfml = lxfml_parse(to_bytes(xml));
+    EXPECT_EQ(lxfml.format, LxfmlFormat::Models);
+    EXPECT_TRUE(lxfml.has_prepacks);
+    ASSERT_EQ(lxfml.v2_models.size(), 1u);
+    const auto& m = lxfml.v2_models[0];
+    EXPECT_EQ(m.model_name, "TESTMODEL");
+    ASSERT_EQ(m.groups.size(), 1u);
+    EXPECT_EQ(m.groups[0].group_name, "TestGroup");
+    ASSERT_EQ(m.groups[0].bricks.size(), 1u);
+    const auto& b = m.groups[0].bricks[0];
+    EXPECT_EQ(b.brick_id, 3666);
+    EXPECT_EQ(b.brick_name, "test_brick");
+    EXPECT_FALSE(b.has_assembly);
+    ASSERT_EQ(b.sub_bricks.size(), 1u);
+    EXPECT_EQ(b.sub_bricks[0].material_id, 192);
+
+    // Flattened into the unified bricks vector too.
+    ASSERT_EQ(lxfml.bricks.size(), 1u);
+    EXPECT_EQ(lxfml.bricks[0].design_id, 3666);
+}
+
+TEST(LXFML, V2BrickAssemblyAttributes) {
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML majorVersion="2" minorVersion="1">
+  <Models>
+    <Model angle="0.00000000" ax="0.00000000" ay="0.00000000" az="1.00000000" modelName="M" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="0.00000000" z="0.00000000">
+      <Group angle="0.00000000" ax="0.00000000" ay="0.00000000" az="1.00000000" groupID="0" groupName="G" groupRefID="0" objectUniqueID="0" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="0.00000000" z="0.00000000">
+        <Brick angle="0.00000000" assemblyID="75535" assemblyRefID="75535" ax="0.00000000" ay="0.00000000" az="1.00000000" brickID="6220" brickName="b" brickRefID="0" materialID="192" objectUniqueID="1" rotPivW="1.00000000" rotPivX="0.00000000" rotPivY="0.00000000" rotPivZ="0.00000000" x="0.00000000" y="0.00000000" z="0.00000000"/>
+      </Group>
+    </Model>
+  </Models>
+</LXFML>)";
+    auto lxfml = lxfml_parse(to_bytes(xml));
+    const auto& b = lxfml.v2_models[0].groups[0].bricks[0];
+    EXPECT_TRUE(b.has_assembly);
+    EXPECT_EQ(b.assembly_id, 75535);
+    EXPECT_EQ(b.assembly_ref_id, 75535);
+}
+
+TEST(LXFML, FormatDetection) {
+    auto lxfml_bricks = lxfml_parse(to_bytes(MINIMAL_LXFML));
+    EXPECT_EQ(lxfml_bricks.format, LxfmlFormat::Bricks);
+
+    const char* scene_xml = R"(<?xml version="1.0"?>
+<LXFML versionMajor="4" versionMinor="0">
+  <Scene cameraRefID="0">
+    <Model name="D"><Group refID="0" angle="0" ax="0" ay="1" az="0" tx="0" ty="0" tz="0"/></Model>
+  </Scene>
+</LXFML>)";
+    auto lxfml_scene = lxfml_parse(to_bytes(scene_xml));
+    EXPECT_EQ(lxfml_scene.format, LxfmlFormat::Scene);
 }

@@ -1,7 +1,27 @@
 #include "lego/brick_geometry/brick_geometry_writer.h"
 #include "common/binary_writer/binary_writer.h"
 
+#include <cmath>
+
 namespace lu::assets {
+
+namespace {
+
+Vec3 sub(const Vec3& a, const Vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+
+Vec3 cross(const Vec3& a, const Vec3& b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+Vec3 add(const Vec3& a, const Vec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+
+Vec3 normalized(const Vec3& v) {
+    float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len < 1e-12f) return {0.0f, 0.0f, 0.0f};
+    return {v.x / len, v.y / len, v.z / len};
+}
+
+} // namespace
 
 std::vector<uint8_t> brick_geometry_write(const BrickGeometry& geom) {
     BinaryWriter w;
@@ -70,6 +90,45 @@ std::vector<uint8_t> brick_geometry_write(const BrickGeometry& geom) {
     }
 
     return std::move(w.data());
+}
+
+BrickGeometry brick_geometry_from_mesh(const std::vector<Vec3>& positions,
+                                        const std::vector<Vec3>& normals,
+                                        const std::vector<std::pair<float, float>>& uvs,
+                                        const std::vector<uint32_t>& indices) {
+    BrickGeometry geom;
+    geom.has_uvs = true;
+    geom.has_normals = true;
+    geom.options = 0x01 | 0x02;
+    geom.indices = indices;
+
+    std::vector<Vec3> computed_normals;
+    const std::vector<Vec3>* final_normals = &normals;
+    if (normals.empty()) {
+        computed_normals.assign(positions.size(), Vec3{0.0f, 0.0f, 0.0f});
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+            uint32_t ia = indices[i], ib = indices[i + 1], ic = indices[i + 2];
+            Vec3 face_normal = cross(sub(positions[ib], positions[ia]),
+                                      sub(positions[ic], positions[ia]));
+            computed_normals[ia] = add(computed_normals[ia], face_normal);
+            computed_normals[ib] = add(computed_normals[ib], face_normal);
+            computed_normals[ic] = add(computed_normals[ic], face_normal);
+        }
+        for (auto& n : computed_normals) n = normalized(n);
+        final_normals = &computed_normals;
+    }
+
+    geom.vertices.resize(positions.size());
+    for (size_t i = 0; i < positions.size(); i++) {
+        geom.vertices[i].position = positions[i];
+        geom.vertices[i].normal = (*final_normals)[i];
+        if (i < uvs.size()) {
+            geom.vertices[i].u = uvs[i].first;
+            geom.vertices[i].v = uvs[i].second;
+        }
+    }
+
+    return geom;
 }
 
 } // namespace lu::assets

@@ -224,3 +224,71 @@ TEST(BrickGeometry, RoundTripByteIdenticalWithTagBlock) {
     ASSERT_EQ(geom.tag_data.size(), 4u);
     EXPECT_EQ(brick_geometry_write(geom), b.data);
 }
+
+TEST(BrickGeometryFromMesh, ComputesFlatTriangleNormal) {
+    // A single triangle in the XY plane; the +Z face normal should be computed for
+    // all three vertices since no normals are supplied.
+    std::vector<Vec3> positions = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+    };
+    std::vector<std::pair<float, float>> uvs = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}};
+    std::vector<uint32_t> indices = {0, 1, 2};
+
+    auto geom = brick_geometry_from_mesh(positions, {}, uvs, indices);
+
+    EXPECT_TRUE(geom.has_normals);
+    EXPECT_TRUE(geom.has_uvs);
+    ASSERT_EQ(geom.vertices.size(), 3u);
+    for (const auto& v : geom.vertices) {
+        EXPECT_NEAR(v.normal.x, 0.0f, 1e-5f);
+        EXPECT_NEAR(v.normal.y, 0.0f, 1e-5f);
+        EXPECT_NEAR(v.normal.z, 1.0f, 1e-5f);
+    }
+    EXPECT_FLOAT_EQ(geom.vertices[1].u, 1.0f);
+}
+
+TEST(BrickGeometryFromMesh, UsesSuppliedNormalsVerbatim) {
+    std::vector<Vec3> positions = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+    };
+    std::vector<Vec3> normals = {
+        {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, -1.0f},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2};
+
+    auto geom = brick_geometry_from_mesh(positions, normals, {}, indices);
+    ASSERT_EQ(geom.vertices.size(), 3u);
+    for (const auto& v : geom.vertices) {
+        EXPECT_FLOAT_EQ(v.normal.z, -1.0f);
+    }
+    // No UVs supplied — default to zero.
+    EXPECT_FLOAT_EQ(geom.vertices[0].u, 0.0f);
+    EXPECT_FLOAT_EQ(geom.vertices[0].v, 0.0f);
+}
+
+TEST(BrickGeometryFromMesh, WriteThenParseRoundTrips) {
+    std::vector<Vec3> positions = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 0.0f},
+    };
+    std::vector<std::pair<float, float>> uvs = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2, 1, 3, 2};
+
+    auto geom = brick_geometry_from_mesh(positions, {}, uvs, indices);
+    auto data = brick_geometry_write(geom);
+    auto reparsed = brick_geometry_parse(data);
+
+    EXPECT_EQ(reparsed.options, geom.options);
+    ASSERT_EQ(reparsed.vertices.size(), geom.vertices.size());
+    ASSERT_EQ(reparsed.indices.size(), geom.indices.size());
+    for (size_t i = 0; i < geom.vertices.size(); i++) {
+        EXPECT_FLOAT_EQ(reparsed.vertices[i].position.x, geom.vertices[i].position.x);
+        EXPECT_FLOAT_EQ(reparsed.vertices[i].normal.z, geom.vertices[i].normal.z);
+        EXPECT_FLOAT_EQ(reparsed.vertices[i].u, geom.vertices[i].u);
+    }
+    // Second write must be byte-identical to the first (deterministic serialization).
+    EXPECT_EQ(brick_geometry_write(reparsed), data);
+}
