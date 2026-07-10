@@ -9,6 +9,8 @@ HKX files contain Havok physics data in three possible formats: binary packfile,
 
 This directory's `reader/`/`writer`/`converters` modules provide a semantic (but intentionally lossy) view of both binary variants for physics-object analysis. Separately, `packfile/` and `tagged/` each provide byte-perfect, container-level round-trip (parse original file -> write it back out -> identical bytes) for their respective format, verified against every real binary-packfile and tagged-binary `.hkx` file shipped by the LEGO Universe client (0 failures in both cases — see each module's own README for corpus survey methodology, byte layout tables, and format-specific quirks). XML HKX is out of scope for round-trip entirely: no real client file uses it.
 
+**`unified/` is the recommended entry point** for byte-perfect round-trip when a caller has a `.hkx` file and doesn't already know which of the two supported container formats it is (the common case, since both share the extension): `hkx_parse()`/`hkx_write()` detect the format from magic bytes and dispatch to `packfile/` or `tagged/` automatically, returning a `std::variant<HkxPackfile, HkxTaggedBinary>`. See `unified/README.md`.
+
 ## Binary Layout
 
 ### Binary Packfile Format

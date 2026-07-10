@@ -49,10 +49,8 @@
 #include "lego/brick_geometry/brick_geometry_writer.h"
 #include "lego/lxfml/lxfml_reader.h"
 #include "lego/lxfml/lxfml_writer.h"
-#include "havok/packfile/hkx_packfile_reader.h"
-#include "havok/packfile/hkx_packfile_writer.h"
-#include "havok/tagged/hkx_tagged_binary_reader.h"
-#include "havok/tagged/hkx_tagged_binary_writer.h"
+#include "havok/unified/hkx_reader.h"
+#include "havok/unified/hkx_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -218,91 +216,46 @@ void check_sd0(const fs::path& path, FormatStats& stats) {
 
 // .hkx ships in three format variants sharing one extension: binary packfile (magic
 // 0x57E0E057 0x10C0C010) and tagged binary (magic 0xCAB00D1E 0xD011FACE) are both
-// round-tripped here (see src/havok/packfile/ and src/havok/tagged/ respectively); XML
-// HKX is out of scope for this project (zero real client files use it) and is
-// recognized and SKIPPED rather than fed to either reader (which would just throw a
-// bad-magic error and get miscounted as a parse failure). That "identify by magic, skip
-// non-matching, round-trip the rest" shape doesn't fit the generic check_file()
-// dispatcher (which mismatches, rather than skips, on wrong magic when an extension maps
-// 1:1 to a format), so — like check_sd0() above — .hkx gets its own function.
-void check_hkx_packfile(const std::vector<uint8_t>& data, const fs::path& path, FormatStats& stats) {
-    std::vector<uint8_t> out;
-    try {
-        auto pf = lu::assets::hkx_packfile_parse(data);
-        out = lu::assets::hkx_packfile_write(pf);
-    } catch (const std::exception& ex) {
-        stats.parse_fail++;
-        if (stats.messages.size() < 10) {
-            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
-        }
-        return;
-    }
-
-    if (out == data) {
-        stats.ok++;
-        return;
-    }
-    stats.mismatch++;
-    if (stats.messages.size() < 10) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
-                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
-        stats.messages.push_back(buf);
-    }
-}
-
-void check_hkx_tagged(const std::vector<uint8_t>& data, const fs::path& path, FormatStats& stats) {
-    std::vector<uint8_t> out;
-    try {
-        auto tf = lu::assets::hkx_tagged_binary_parse(data);
-        out = lu::assets::hkx_tagged_binary_write(tf);
-    } catch (const std::exception& ex) {
-        stats.parse_fail++;
-        if (stats.messages.size() < 10) {
-            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
-        }
-        return;
-    }
-
-    if (out == data) {
-        stats.ok++;
-        return;
-    }
-    stats.mismatch++;
-    if (stats.messages.size() < 10) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
-                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
-        stats.messages.push_back(buf);
-    }
-}
-
-// Dispatches a .hkx file to the packfile or tagged-binary checker by magic, or skips it
-// (XML HKX, or anything else unrecognized) without counting it as a failure.
+// round-tripped here via the unified hkx_parse()/hkx_write() dispatcher (see
+// src/havok/unified/), which itself detects which of the two a file is — the sweep
+// tool doesn't sniff magic bytes itself. XML HKX is out of scope for this project
+// (zero real client files use it); hkx_parse() throws HkxFormatError for it (or
+// anything else unrecognized), which this treats as a skip rather than a failure,
+// since it's an intentional scope boundary, not a real-file round-trip bug. That
+// "identify by magic, skip non-matching, round-trip the rest" shape doesn't fit the
+// generic check_file() dispatcher (which mismatches, rather than skips, on wrong magic
+// when an extension maps 1:1 to a format), so — like check_sd0() above — .hkx gets its
+// own function.
 void check_hkx(const fs::path& path, FormatStats& stats) {
     auto data = read_file(path);
     if (data.empty()) return;
 
-    static constexpr uint8_t packfile_magic[8] = {
-        0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10
-    };
-    static constexpr uint8_t tagged_magic[8] = {
-        0x1E, 0x0D, 0xB0, 0xCA, 0xCE, 0xFA, 0x11, 0xD0
-    };
-    if (data.size() < 8) {
-        stats.skipped++;
+    std::vector<uint8_t> out;
+    try {
+        auto hkx = lu::assets::hkx_parse(data);
+        out = lu::assets::hkx_write(hkx);
+    } catch (const lu::assets::HkxFormatError&) {
+        stats.skipped++; // XML HKX, or anything else unrecognized — out of scope.
+        return;
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
         return;
     }
-    if (memcmp(data.data(), packfile_magic, 8) == 0) {
-        check_hkx_packfile(data, path, stats);
+
+    if (out == data) {
+        stats.ok++;
         return;
     }
-    if (memcmp(data.data(), tagged_magic, 8) == 0) {
-        check_hkx_tagged(data, path, stats);
-        return;
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
     }
-    // XML HKX (or anything else unrecognized) — out of scope, not a failure.
-    stats.skipped++;
 }
 
 // LXFML mismatches fall into two buckets: a genuine bug, or one of two documented,
