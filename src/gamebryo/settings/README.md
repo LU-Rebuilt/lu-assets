@@ -45,7 +45,7 @@ Offset  Size  Type      Field
   +0x00  4    u32       entry_count — number of animations in this group
   +0x04  1    u8        name_len
   +0x05  N    char[N]   name
-  +var   4    u32       unk_trailing — purpose unknown; 0 in the one known real sample
+  +var   4    u32       unk_trailing — undetermined (see below)
 
 --- Animation Table ---
 +var    4     u32       animation_count
@@ -77,7 +77,9 @@ Further resolution would require either live debugging of the actual authoring t
 
 ## The rare Sequence Groups case
 
-`group_count` is 0 in every real file except one pair (`mf_main_low_hardware.settings` / `mf_main_low_software.settings`, identical content repeated across every client version — genuinely a single unique sample). That file has `group_count=1`, a group named `"Lookat_01"` listing 6 animations. The group entry layout (`entry_count` + name + a trailing unknown `u32`, no per-member payload) was confirmed against that one sample; the animation table starts immediately after via `animation_count` resync.
+`group_count` is 0 in every real file except one pair (`mf_main_low_hardware.settings` / `mf_main_low_software.settings`, identical content repeated across every client version — genuinely a single unique sample). That file has `group_count=1`, a group named `"Lookat_01"` listing 6 animations. The group entry layout (`entry_count` + name + a trailing `u32`, no per-member payload) was confirmed against that one sample; the animation table starts immediately after via `animation_count` resync.
+
+The trailing `u32` after the name (`unk_trailing`) is **undetermined** — not just unresolved but unresolvable from this corpus: since only one real file has `group_count != 0` at all, there is exactly one observed value (0) and no second data point to correlate against. Unlike unk_c/unk_d/unk_e above, this isn't a case of "investigated and found to be non-semantic" — it's "investigated and found there is nothing left to investigate." Resolving it further would require either a `.settings` file the current corpus doesn't contain, or the authoring tool's source (never identified — see below).
 
 ## Key Details
 

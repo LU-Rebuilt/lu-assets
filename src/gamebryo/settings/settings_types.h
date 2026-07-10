@@ -94,7 +94,11 @@ namespace lu::assets {
 //     [u32]      entry_count        — number of animations belonging to this group
 //     [u8]       name_len
 //     [n bytes]  name
-//     [u32]      unk_trailing       — purpose unknown; 0 in the one known real sample
+//     [u32]      unk_trailing       — undetermined; the full 3754-file corpus has
+//                                     exactly one file with group_count != 0, so
+//                                     there is only one real sample of this field
+//                                     (value 0) to observe — no further corpus
+//                                     evidence exists to narrow this down further
 //
 //   --- Animation table ---
 //   [u32]        animation_count    — number of type-3 (animation) entries
@@ -150,7 +154,10 @@ struct SettingsSequence {
 struct SettingsGroupEntry {
     uint32_t entry_count = 0; // number of animations belonging to this group
     std::string name;
-    uint32_t unk_trailing = 0; // purpose unknown; 0 in the one known real sample
+    // Undetermined: the full 3754-file corpus has exactly one file with a nonzero
+    // group_count, so this is the only real sample of the field (value 0) — no
+    // further corpus evidence exists to narrow this down.
+    uint32_t unk_trailing = 0;
 };
 
 // Per-entry in the animation table (after "Sequence Groups" section). See the
