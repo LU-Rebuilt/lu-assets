@@ -30,6 +30,11 @@ std::vector<uint8_t> settings_write(const SettingsFile& s) {
     w.write_u32(s.section_type_groups);
     w.write_string8("Sequence Groups");
     w.write_u32(s.group_count);
+    for (const SettingsGroupEntry& group : s.group_entries) {
+        w.write_u32(group.entry_count);
+        w.write_string8(group.name);
+        w.write_u32(group.unk_trailing);
+    }
 
     // Animation table
     w.write_u32(static_cast<uint32_t>(s.animations.size()));

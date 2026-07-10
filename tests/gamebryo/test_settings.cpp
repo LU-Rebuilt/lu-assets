@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "gamebryo/settings/settings_reader.h"
+#include "gamebryo/settings/settings_writer.h"
 
 #include <cstring>
 #include <string>
@@ -209,6 +210,59 @@ TEST(Settings, ParseGroupEntries) {
     EXPECT_EQ(s.animations[0].event_code, 100u);
 }
 
+TEST(Settings, ParseNonzeroGroupCount) {
+    // The one known real case (mf_main_low_hardware/software.settings): a populated
+    // "Sequence Groups" entry between group_count and the animation table. Layout is
+    // [entry_count][name_len][name][unk_trailing], no per-member payload — the
+    // animation table starts immediately after via animation_count resync.
+    SettingsBuilder b;
+    b.str8("2.3.0");
+    b.header();
+    b.sequences_marker();
+    b.u32(1);
+    b.sequence("idle", 3, 0);
+    b.u32(4);
+    b.groups_marker();
+    b.u32(1);              // group_count = 1
+    b.u32(6);               // group entry_count = 6
+    b.str8("Lookat_01");    // group name
+    b.u32(0);               // group unk_trailing
+    b.u32(1);               // animation_count = 1
+    b.animation(0);
+    for (int i = 0; i < 4; ++i) b.u8(0);
+
+    auto s = settings_parse(b.data);
+    EXPECT_EQ(s.group_count, 1u);
+    ASSERT_EQ(s.group_entries.size(), 1u);
+    EXPECT_EQ(s.group_entries[0].entry_count, 6u);
+    EXPECT_EQ(s.group_entries[0].name, "Lookat_01");
+    EXPECT_EQ(s.group_entries[0].unk_trailing, 0u);
+    ASSERT_EQ(s.animations.size(), 1u);
+    EXPECT_EQ(s.animations[0].event_code, 0u);
+}
+
+TEST(Settings, RoundTripNonzeroGroupCount) {
+    SettingsBuilder b;
+    b.str8("2.3.0");
+    b.header();
+    b.sequences_marker();
+    b.u32(1);
+    b.sequence("idle", 3, 0);
+    b.u32(4);
+    b.groups_marker();
+    b.u32(1);
+    b.u32(6);
+    b.str8("Lookat_01");
+    b.u32(0);
+    b.u32(1);
+    b.animation(0);
+    for (int i = 0; i < 4; ++i) b.u8(0);
+
+    auto s = settings_parse(b.data);
+    auto out = settings_write(s);
+    EXPECT_EQ(out, b.data);
+}
+
 TEST(Settings, FooterBytesStored) {
     auto data = build_empty_sequences();
     auto s = settings_parse(data);
@@ -236,8 +290,6 @@ TEST(Settings, WrongSequencesMarkerThrows) {
 }
 
 // ---- Round-trip (settings_write) ----
-
-#include "gamebryo/settings/settings_writer.h"
 
 TEST(Settings, RoundTripByteIdentical) {
     auto data = build_one_sequence();

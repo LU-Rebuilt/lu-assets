@@ -37,16 +37,16 @@ SettingsFile settings_parse(std::span<const uint8_t> data) {
         throw SettingsError("Settings: empty version string");
     }
 
-    // --- Header fields (22 bytes) ---
-    // Identified from NiKFMTool::ReadBinaryKFM debug symbols and kfm.xml spec.
+    // --- Header fields (22 bytes) --- see settings_types.h for the full corpus-survey
+    // findings on unk_c/d/e/f (stale authoring-tool memory, not semantic data).
     if (r.remaining() < 4 + 4 + 4 + 1 + 4 + 1) {
         throw SettingsError("Settings: truncated before header fields");
     }
     s.header_flags       = r.read_u32();  // kfm.xml "Unknown Byte" as u32; always 1
     s.model_filename_len = r.read_u32();  // NIF model filename length; always 0 (empty)
-    s.unk_c              = r.read_u32();  // varies
-    s.unk_d              = r.read_u8();   // varies (0, 63, 64, or 192)
-    s.unk_e              = r.read_u32();  // varies (0, 0xF5, or 0xFFFFFFFF)
+    s.unk_c              = r.read_u32();
+    s.unk_d              = r.read_u8();
+    s.unk_e              = r.read_u32();
     s.unk_f              = r.read_u8();   // always 0
 
     // --- Sequences section ---
@@ -114,11 +114,29 @@ SettingsFile settings_parse(std::span<const uint8_t> data) {
         }
     }
 
-    // Group count (always 0 in observed client files).
+    // Group count (0 in nearly every observed client file).
     if (r.remaining() < 4) {
         throw SettingsError("Settings: truncated at group_count");
     }
     s.group_count = r.read_u32();
+
+    // Group entries (rare — see SettingsGroupEntry). No per-member payload follows
+    // the name; the animation table starts immediately after the last group entry.
+    s.group_entries.reserve(s.group_count);
+    for (uint32_t i = 0; i < s.group_count; ++i) {
+        if (r.remaining() < 4 + 1) {
+            throw SettingsError("Settings: truncated inside group entry " + std::to_string(i));
+        }
+        SettingsGroupEntry group;
+        group.entry_count = r.read_u32();
+        group.name        = r.read_string8();
+        if (r.remaining() < 4) {
+            throw SettingsError("Settings: truncated at group entry trailing field " +
+                std::to_string(i));
+        }
+        group.unk_trailing = r.read_u32();
+        s.group_entries.push_back(std::move(group));
+    }
 
     // --- Animation table ---
     // u32 animation_count followed by animation_count entries of 15 bytes each.
