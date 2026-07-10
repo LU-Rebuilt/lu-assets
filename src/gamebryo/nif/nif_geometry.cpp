@@ -139,19 +139,113 @@ std::string texture_filename(
     return tex && tex->use_external ? tex->filename : std::string{};
 }
 
+template <typename T>
+struct ResolvedProperty {
+    const T* value = nullptr;
+    NifRenderPropertySource source;
+};
+
+template <typename T>
+ResolvedProperty<T> property_on_node(
+    const NifNode& node,
+    const std::unordered_map<uint32_t, const T*>& properties,
+    uint32_t inheritance_depth) {
+
+    ResolvedProperty<T> result;
+    uint32_t matches = 0;
+    for (int32_t prop_ref : node.properties) {
+        const T* value = find_by_block(properties, prop_ref);
+        if (!value) continue;
+        ++matches;
+        if (!result.value) result.value = value;
+    }
+    if (result.value) {
+        result.source.present = true;
+        result.source.property_block = result.value->block_index;
+        result.source.owner_node_block = node.block_index;
+        result.source.inheritance_depth = inheritance_depth;
+        result.source.duplicates_on_owner = matches > 0 ? matches - 1 : 0;
+    }
+    return result;
+}
+
+template <typename T>
+ResolvedProperty<T> nearest_property(
+    const NifNode& node,
+    const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
+    const std::unordered_map<uint32_t, uint32_t>& parent_by_block,
+    const std::unordered_map<uint32_t, const T*>& properties) {
+
+    const NifNode* current = &node;
+    uint32_t depth = 0;
+    std::unordered_set<uint32_t> visited;
+    while (current && visited.insert(current->block_index).second) {
+        ResolvedProperty<T> result = property_on_node(*current, properties, depth);
+        if (result.value) return result;
+
+        auto parent_it = parent_by_block.find(current->block_index);
+        if (parent_it == parent_by_block.end()) break;
+        auto node_it = node_by_block.find(parent_it->second);
+        if (node_it == node_by_block.end()) break;
+        current = node_it->second;
+        ++depth;
+    }
+    return {};
+}
+
+void populate_property_sources(
+    NifRenderPropertySources& sources,
+    const ResolvedProperty<NifMaterial>& material,
+    const ResolvedProperty<NifTexturingProperty>& texturing,
+    const ResolvedProperty<NifAlphaProperty>& alpha,
+    const ResolvedProperty<NifVertexColorProperty>& vertex_color,
+    const ResolvedProperty<NifZBufferProperty>& z_buffer,
+    const ResolvedProperty<NifSpecularProperty>& specular,
+    const ResolvedProperty<NifShadeProperty>& shade,
+    const ResolvedProperty<NifStencilProperty>& stencil) {
+
+    sources.material = material.source;
+    sources.texturing = texturing.source;
+    sources.alpha = alpha.source;
+    sources.vertex_color = vertex_color.source;
+    sources.z_buffer = z_buffer.source;
+    sources.specular = specular.source;
+    sources.shade = shade.source;
+    sources.stencil = stencil.source;
+}
+
 NifRenderMaterial build_material_for_node(
     const NifNode& node,
+    const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
+    const std::unordered_map<uint32_t, uint32_t>& parent_by_block,
     const std::unordered_map<uint32_t, const NifMaterial*>& materials,
     const std::unordered_map<uint32_t, const NifTexturingProperty*>& texturing_props,
     const std::unordered_map<uint32_t, const NifTextureRef*>& textures,
-    const std::unordered_map<uint32_t, const NifAlphaProperty*>& alpha_props) {
+    const std::unordered_map<uint32_t, const NifAlphaProperty*>& alpha_props,
+    const std::unordered_map<uint32_t, const NifVertexColorProperty*>& vertex_color_props,
+    const std::unordered_map<uint32_t, const NifZBufferProperty*>& z_buffer_props,
+    const std::unordered_map<uint32_t, const NifSpecularProperty*>& specular_props,
+    const std::unordered_map<uint32_t, const NifShadeProperty*>& shade_props,
+    const std::unordered_map<uint32_t, const NifStencilProperty*>& stencil_props) {
 
     NifRenderMaterial out = default_material();
 
-    const NifMaterial* src_mat = nullptr;
-    for (int32_t prop_ref : node.properties) {
-        if ((src_mat = find_by_block(materials, prop_ref)) != nullptr) break;
-    }
+    const auto direct_material = property_on_node(node, materials, 0);
+    const auto direct_texturing = property_on_node(node, texturing_props, 0);
+    const auto direct_alpha = property_on_node(node, alpha_props, 0);
+    const auto direct_vertex_color = property_on_node(node, vertex_color_props, 0);
+    const auto direct_z_buffer = property_on_node(node, z_buffer_props, 0);
+    const auto direct_specular = property_on_node(node, specular_props, 0);
+    const auto direct_shade = property_on_node(node, shade_props, 0);
+    const auto direct_stencil = property_on_node(node, stencil_props, 0);
+    populate_property_sources(
+        out.direct_property_sources,
+        direct_material, direct_texturing, direct_alpha, direct_vertex_color,
+        direct_z_buffer, direct_specular, direct_shade, direct_stencil);
+
+    // Preserve legacy visual behavior for now: active material/texture/alpha
+    // fields still come only from the geometry node's direct properties.
+    const NifMaterial* src_mat = direct_material.value;
 
     if (src_mat) {
         out.name = src_mat->name.empty() ? "NIF Material" : src_mat->name;
@@ -171,13 +265,18 @@ NifRenderMaterial build_material_for_node(
         out.emissive[2] = src_mat->emissive.z;
     }
 
-    const NifTexturingProperty* tex_prop = nullptr;
-    for (int32_t prop_ref : node.properties) {
-        if ((tex_prop = find_by_block(texturing_props, prop_ref)) != nullptr) break;
-    }
+    const NifTexturingProperty* tex_prop = direct_texturing.value;
 
     if (tex_prop) {
-        out.diffuse_texture = texture_filename(textures, tex_prop->base_texture_source_ref);
+        const NifTextureRef* diffuse_texture = find_by_block(
+            textures, tex_prop->base_texture_source_ref);
+        out.diffuse_texture = diffuse_texture && diffuse_texture->use_external
+            ? diffuse_texture->filename
+            : std::string{};
+        if (diffuse_texture) {
+            out.diffuse_texture_has_alpha_format = true;
+            out.diffuse_texture_alpha_format = diffuse_texture->alpha_format;
+        }
         out.diffuse_texture_has_clamp_mode = tex_prop->base_texture_has_clamp_mode;
         out.diffuse_texture_clamp_mode = tex_prop->base_texture_clamp_mode;
         out.diffuse_texture_transform = tex_prop->base_texture_transform;
@@ -199,16 +298,81 @@ NifRenderMaterial build_material_for_node(
         out.glow_texture_transform = tex_prop->glow_texture_transform;
     }
 
-    const NifAlphaProperty* alpha = nullptr;
-    for (int32_t prop_ref : node.properties) {
-        if ((alpha = find_by_block(alpha_props, prop_ref)) != nullptr) break;
-    }
+    const NifAlphaProperty* alpha = direct_alpha.value;
     if (alpha) {
         // Keep alpha as parsed property data. Renderers may combine this with
         // texture format, material alpha, shader family, and pass policy.
         out.has_alpha_property = true;
         out.alpha_flags = alpha->flags;
         out.alpha_threshold = alpha->threshold;
+    }
+
+    const auto resolved_material = nearest_property(
+        node, node_by_block, parent_by_block, materials);
+    const auto resolved_texturing = nearest_property(
+        node, node_by_block, parent_by_block, texturing_props);
+    const auto resolved_alpha = nearest_property(
+        node, node_by_block, parent_by_block, alpha_props);
+    const auto resolved_vertex_color = nearest_property(
+        node, node_by_block, parent_by_block, vertex_color_props);
+    const auto resolved_z_buffer = nearest_property(
+        node, node_by_block, parent_by_block, z_buffer_props);
+    const auto resolved_specular = nearest_property(
+        node, node_by_block, parent_by_block, specular_props);
+    const auto resolved_shade = nearest_property(
+        node, node_by_block, parent_by_block, shade_props);
+    const auto resolved_stencil = nearest_property(
+        node, node_by_block, parent_by_block, stencil_props);
+    populate_property_sources(
+        out.resolved_state.sources,
+        resolved_material, resolved_texturing, resolved_alpha, resolved_vertex_color,
+        resolved_z_buffer, resolved_specular, resolved_shade, resolved_stencil);
+
+    if (resolved_alpha.value) {
+        out.resolved_state.has_alpha = true;
+        out.resolved_state.alpha_flags = resolved_alpha.value->flags;
+        out.resolved_state.alpha_threshold = resolved_alpha.value->threshold;
+    }
+    if (resolved_vertex_color.value) {
+        out.resolved_state.has_vertex_color = true;
+        out.resolved_state.vertex_color_flags = resolved_vertex_color.value->flags;
+    }
+    if (resolved_z_buffer.value) {
+        out.resolved_state.has_z_buffer = true;
+        out.resolved_state.z_buffer_flags = resolved_z_buffer.value->flags;
+    }
+    if (resolved_specular.value) {
+        out.resolved_state.has_specular = true;
+        out.resolved_state.specular_flags = resolved_specular.value->flags;
+    }
+    if (resolved_shade.value) {
+        out.resolved_state.has_shade = true;
+        out.resolved_state.shade_flags = resolved_shade.value->flags;
+    }
+    if (resolved_stencil.value) {
+        out.resolved_state.has_stencil = true;
+        out.resolved_state.stencil_flags = resolved_stencil.value->flags;
+        out.resolved_state.stencil_ref = resolved_stencil.value->stencil_ref;
+        out.resolved_state.stencil_mask = resolved_stencil.value->stencil_mask;
+    }
+
+    const NifNode* current = &node;
+    uint32_t sort_depth = 0;
+    std::unordered_set<uint32_t> sort_visited;
+    while (current && sort_visited.insert(current->block_index).second) {
+        if (current->type_name == "NiSortAdjustNode" && current->has_sorting_mode) {
+            out.resolved_state.has_sort_adjust = true;
+            out.resolved_state.sort_adjust_node_block = current->block_index;
+            out.resolved_state.sort_adjust_inheritance_depth = sort_depth;
+            out.resolved_state.sorting_mode = current->sorting_mode;
+            break;
+        }
+        auto parent_it = parent_by_block.find(current->block_index);
+        if (parent_it == parent_by_block.end()) break;
+        auto node_it = node_by_block.find(parent_it->second);
+        if (node_it == node_by_block.end()) break;
+        current = node_it->second;
+        ++sort_depth;
     }
 
     return out;
@@ -346,13 +510,17 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
     }
 
     std::unordered_map<uint32_t, uint32_t> parent_by_block;
+    std::unordered_set<uint32_t> multiple_parent_blocks;
     for (const auto& node : nif.nodes) {
         for (int32_t child_ref : node.children) {
             if (child_ref < 0) continue;
             uint32_t child_block = static_cast<uint32_t>(child_ref);
-            if (node_by_block.find(child_block) != node_by_block.end() &&
-                parent_by_block.find(child_block) == parent_by_block.end()) {
-                parent_by_block[child_block] = node.block_index;
+            if (node_by_block.find(child_block) == node_by_block.end()) continue;
+            auto existing = parent_by_block.find(child_block);
+            if (existing == parent_by_block.end()) {
+                parent_by_block.emplace(child_block, node.block_index);
+            } else if (existing->second != node.block_index) {
+                multiple_parent_blocks.insert(child_block);
             }
         }
     }
@@ -380,6 +548,31 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
     std::unordered_map<uint32_t, const NifAlphaProperty*> alpha_by_block;
     for (const auto& alpha : nif.alpha_properties) {
         alpha_by_block[alpha.block_index] = &alpha;
+    }
+
+    std::unordered_map<uint32_t, const NifVertexColorProperty*> vertex_color_by_block;
+    for (const auto& prop : nif.vertex_color_properties) {
+        vertex_color_by_block[prop.block_index] = &prop;
+    }
+
+    std::unordered_map<uint32_t, const NifZBufferProperty*> z_buffer_by_block;
+    for (const auto& prop : nif.z_buffer_properties) {
+        z_buffer_by_block[prop.block_index] = &prop;
+    }
+
+    std::unordered_map<uint32_t, const NifSpecularProperty*> specular_by_block;
+    for (const auto& prop : nif.specular_properties) {
+        specular_by_block[prop.block_index] = &prop;
+    }
+
+    std::unordered_map<uint32_t, const NifShadeProperty*> shade_by_block;
+    for (const auto& prop : nif.shade_properties) {
+        shade_by_block[prop.block_index] = &prop;
+    }
+
+    std::unordered_map<uint32_t, const NifStencilProperty*> stencil_by_block;
+    for (const auto& prop : nif.stencil_properties) {
+        stencil_by_block[prop.block_index] = &prop;
     }
 
     std::unordered_map<uint32_t, const NifRangeLODData*> range_lod_by_block;
@@ -450,6 +643,27 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
         out.name = node.name.empty() ? "NIF Mesh" : node.name;
         out.source_mesh_block = src.block_index;
         out.source_node_block = node.block_index;
+        const NifNode* chain_node = &node;
+        std::unordered_set<uint32_t> chain_visited;
+        while (chain_node) {
+            if (!chain_visited.insert(chain_node->block_index).second) {
+                out.parent_cycle_detected = true;
+                break;
+            }
+            out.source_node_chain.push_back({
+                chain_node->block_index,
+                chain_node->name,
+                chain_node->type_name
+            });
+            if (multiple_parent_blocks.count(chain_node->block_index) != 0) {
+                out.multiple_parents_detected = true;
+            }
+            auto parent_it = parent_by_block.find(chain_node->block_index);
+            if (parent_it == parent_by_block.end()) break;
+            auto parent_node_it = node_by_block.find(parent_it->second);
+            if (parent_node_it == node_by_block.end()) break;
+            chain_node = parent_node_it->second;
+        }
         out.has_vertex_colors = src.has_vertex_colors;
         auto lod_it = lod_by_node.find(node.block_index);
         if (lod_it != lod_by_node.end()) {
@@ -463,7 +677,10 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
             out.lod_center[2] = lod_it->second.center.z;
         }
         out.material = build_material_for_node(
-            node, material_by_block, texturing_by_block, texture_by_block, alpha_by_block);
+            node, node_by_block, parent_by_block,
+            material_by_block, texturing_by_block, texture_by_block, alpha_by_block,
+            vertex_color_by_block, z_buffer_by_block, specular_by_block,
+            shade_by_block, stencil_by_block);
         populate_skinning(
             node, src.vertices.size(), node_by_block, skin_instance_by_block, skin_data_by_block, out);
 

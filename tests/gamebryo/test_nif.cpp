@@ -336,6 +336,83 @@ TEST(NIF, ParseNiAlphaProperty) {
     EXPECT_EQ(nif.alpha_properties[0].block_index, 0u);
 }
 
+TEST(NIF, ParsePackedRenderProperties) {
+    NifBuilder vertex_color;
+    write_ni_object_net(vertex_color, -1, -1);
+    vertex_color.u16(0x0028); // ambient/diffuse vertex source + full lighting
+
+    NifBuilder z_buffer;
+    write_ni_object_net(z_buffer, -1, -1);
+    z_buffer.u16(0x000F); // test/write + less-equal
+
+    NifBuilder specular;
+    write_ni_object_net(specular, -1, -1);
+    specular.u16(1);
+
+    NifBuilder shade;
+    write_ni_object_net(shade, -1, -1);
+    shade.u16(1);
+
+    NifBuilder stencil;
+    write_ni_object_net(stencil, -1, -1);
+    stencil.u16(0x4C01);
+    stencil.u32(7);
+    stencil.u32(0x00FF00FFu);
+
+    NifBuilder b;
+    write_header(b, {}, {
+        "NiVertexColorProperty", "NiZBufferProperty", "NiSpecularProperty",
+        "NiShadeProperty", "NiStencilProperty"
+    }, {0, 1, 2, 3, 4}, {
+        static_cast<uint32_t>(vertex_color.data.size()),
+        static_cast<uint32_t>(z_buffer.data.size()),
+        static_cast<uint32_t>(specular.data.size()),
+        static_cast<uint32_t>(shade.data.size()),
+        static_cast<uint32_t>(stencil.data.size())
+    });
+    b.data.insert(b.data.end(), vertex_color.data.begin(), vertex_color.data.end());
+    b.data.insert(b.data.end(), z_buffer.data.begin(), z_buffer.data.end());
+    b.data.insert(b.data.end(), specular.data.begin(), specular.data.end());
+    b.data.insert(b.data.end(), shade.data.begin(), shade.data.end());
+    b.data.insert(b.data.end(), stencil.data.begin(), stencil.data.end());
+    b.u32(0);
+
+    auto nif = nif_parse(b.data);
+    ASSERT_EQ(nif.vertex_color_properties.size(), 1u);
+    EXPECT_EQ(nif.vertex_color_properties[0].flags, 0x0028u);
+    ASSERT_EQ(nif.z_buffer_properties.size(), 1u);
+    EXPECT_EQ(nif.z_buffer_properties[0].flags, 0x000Fu);
+    ASSERT_EQ(nif.specular_properties.size(), 1u);
+    EXPECT_EQ(nif.specular_properties[0].flags, 1u);
+    ASSERT_EQ(nif.shade_properties.size(), 1u);
+    EXPECT_EQ(nif.shade_properties[0].flags, 1u);
+    ASSERT_EQ(nif.stencil_properties.size(), 1u);
+    EXPECT_EQ(nif.stencil_properties[0].flags, 0x4C01u);
+    EXPECT_EQ(nif.stencil_properties[0].stencil_ref, 7u);
+    EXPECT_EQ(nif.stencil_properties[0].stencil_mask, 0x00FF00FFu);
+}
+
+TEST(NIF, ParseNiSortAdjustNodeMode) {
+    NifBuilder block;
+    write_ni_av_object(block, -1, 0);
+    block.u32(0); // children
+    block.u32(0); // effects
+    block.u32(1); // SORTING_OFF
+
+    NifBuilder b;
+    write_header(b, {}, {"NiSortAdjustNode"}, {0}, {
+        static_cast<uint32_t>(block.data.size())
+    });
+    b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0);
+
+    auto nif = nif_parse(b.data);
+    ASSERT_EQ(nif.nodes.size(), 1u);
+    EXPECT_EQ(nif.nodes[0].type_name, "NiSortAdjustNode");
+    EXPECT_TRUE(nif.nodes[0].has_sorting_mode);
+    EXPECT_EQ(nif.nodes[0].sorting_mode, 1u);
+}
+
 TEST(NIF, StructDefaultValues) {
     NifVertex v;
     EXPECT_FLOAT_EQ(v.u, 0.0f);
@@ -1012,6 +1089,128 @@ TEST(NIF, RenderExtractionIncludesAlphaPropertyState) {
     EXPECT_TRUE(extracted.meshes[0].material.has_alpha_property);
     EXPECT_EQ(extracted.meshes[0].material.alpha_flags, 0x0001u);
     EXPECT_EQ(extracted.meshes[0].material.alpha_threshold, 0u);
+}
+
+TEST(NIF, RenderExtractionReportsInheritedPropertyCandidates) {
+    NifFile nif;
+
+    NifNode parent;
+    parent.name = "RenderStateRoot";
+    parent.type_name = "NiSortAdjustNode";
+    parent.block_index = 0;
+    parent.children = {1};
+    parent.properties = {10, 11, 12};
+    parent.has_sorting_mode = true;
+    parent.sorting_mode = 1;
+
+    NifNode child;
+    child.name = "ChildMesh";
+    child.type_name = "NiTriShape";
+    child.block_index = 1;
+    child.data_ref = 2;
+    child.properties = {13, 14};
+
+    NifMesh mesh;
+    mesh.block_index = 2;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+
+    NifVertexColorProperty vertex_color;
+    vertex_color.block_index = 10;
+    vertex_color.flags = 0x0028;
+    NifZBufferProperty z_buffer;
+    z_buffer.block_index = 11;
+    z_buffer.flags = 0x000F;
+    NifAlphaProperty parent_alpha;
+    parent_alpha.block_index = 12;
+    parent_alpha.flags = 0x00ED;
+    parent_alpha.threshold = 32;
+    NifAlphaProperty child_alpha;
+    child_alpha.block_index = 13;
+    child_alpha.flags = 0x0201;
+    child_alpha.threshold = 128;
+    NifAlphaProperty duplicate_child_alpha;
+    duplicate_child_alpha.block_index = 14;
+    duplicate_child_alpha.flags = 0x0001;
+    duplicate_child_alpha.threshold = 64;
+
+    nif.nodes = {parent, child};
+    nif.meshes = {mesh};
+    nif.vertex_color_properties = {vertex_color};
+    nif.z_buffer_properties = {z_buffer};
+    nif.alpha_properties = {parent_alpha, child_alpha, duplicate_child_alpha};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    const auto& out = extracted.meshes[0];
+    ASSERT_EQ(out.source_node_chain.size(), 2u);
+    EXPECT_EQ(out.source_node_chain[0].block_index, 1u);
+    EXPECT_EQ(out.source_node_chain[1].block_index, 0u);
+
+    // Legacy active alpha remains direct and therefore behavior-neutral.
+    EXPECT_TRUE(out.material.has_alpha_property);
+    EXPECT_EQ(out.material.alpha_flags, 0x0201u);
+    EXPECT_EQ(out.material.direct_property_sources.alpha.inheritance_depth, 0u);
+
+    const auto& resolved = out.material.resolved_state;
+    EXPECT_TRUE(resolved.has_alpha);
+    EXPECT_EQ(resolved.alpha_flags, 0x0201u);
+    EXPECT_EQ(resolved.sources.alpha.owner_node_block, 1u);
+    EXPECT_EQ(resolved.sources.alpha.inheritance_depth, 0u);
+    EXPECT_EQ(resolved.sources.alpha.duplicates_on_owner, 1u);
+    EXPECT_TRUE(resolved.has_vertex_color);
+    EXPECT_EQ(resolved.vertex_color_flags, 0x0028u);
+    EXPECT_EQ(resolved.sources.vertex_color.owner_node_block, 0u);
+    EXPECT_EQ(resolved.sources.vertex_color.inheritance_depth, 1u);
+    EXPECT_TRUE(resolved.has_z_buffer);
+    EXPECT_EQ(resolved.z_buffer_flags, 0x000Fu);
+    EXPECT_TRUE(resolved.has_sort_adjust);
+    EXPECT_EQ(resolved.sort_adjust_node_block, 0u);
+    EXPECT_EQ(resolved.sort_adjust_inheritance_depth, 1u);
+    EXPECT_EQ(resolved.sorting_mode, 1u);
+}
+
+TEST(NIF, RenderExtractionDiagnosesCyclesAndMultipleParents) {
+    NifFile nif;
+
+    NifNode root_a;
+    root_a.name = "RootA";
+    root_a.type_name = "NiNode";
+    root_a.block_index = 0;
+    root_a.children = {2};
+
+    NifNode root_b;
+    root_b.name = "RootB";
+    root_b.type_name = "NiNode";
+    root_b.block_index = 1;
+    root_b.children = {2};
+
+    NifNode mesh_node;
+    mesh_node.name = "CycleMesh";
+    mesh_node.type_name = "NiTriShape";
+    mesh_node.block_index = 2;
+    mesh_node.data_ref = 3;
+    mesh_node.children = {0}; // malformed cycle back to RootA
+
+    NifMesh mesh;
+    mesh.block_index = 3;
+    mesh.vertices.resize(3);
+    mesh.vertices[0].position = {0.0f, 0.0f, 0.0f};
+    mesh.vertices[1].position = {1.0f, 0.0f, 0.0f};
+    mesh.vertices[2].position = {0.0f, 1.0f, 0.0f};
+    mesh.triangles.push_back({0, 1, 2});
+
+    nif.nodes = {root_a, root_b, mesh_node};
+    nif.meshes = {mesh};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    EXPECT_TRUE(extracted.meshes[0].parent_cycle_detected);
+    EXPECT_TRUE(extracted.meshes[0].multiple_parents_detected);
+    ASSERT_EQ(extracted.meshes[0].source_node_chain.size(), 2u);
 }
 
 TEST(NIF, RenderExtractionAppliesRangeLODDataToRenderableChildren) {

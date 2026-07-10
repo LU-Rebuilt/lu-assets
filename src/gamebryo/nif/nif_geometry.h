@@ -45,6 +45,56 @@ struct NifRenderSkinInfluence {
     float weight = 0.0f;
 };
 
+struct NifRenderPropertySource {
+    bool present = false;
+    uint32_t property_block = 0;
+    uint32_t owner_node_block = 0;
+    uint32_t inheritance_depth = 0; // 0 = geometry node, 1 = parent, ...
+    uint32_t duplicates_on_owner = 0;
+};
+
+struct NifRenderPropertySources {
+    NifRenderPropertySource material;
+    NifRenderPropertySource texturing;
+    NifRenderPropertySource alpha;
+    NifRenderPropertySource vertex_color;
+    NifRenderPropertySource z_buffer;
+    NifRenderPropertySource specular;
+    NifRenderPropertySource shade;
+    NifRenderPropertySource stencil;
+};
+
+// Nearest-property-by-type candidate state. This is diagnostic/parser data;
+// consumers explicitly decide when to promote it to effective GPU state.
+struct NifRenderAuthoredState {
+    NifRenderPropertySources sources;
+    bool has_alpha = false;
+    uint16_t alpha_flags = 0;
+    uint8_t alpha_threshold = 0;
+    bool has_vertex_color = false;
+    uint16_t vertex_color_flags = 0;
+    bool has_z_buffer = false;
+    uint16_t z_buffer_flags = 3;
+    bool has_specular = false;
+    uint16_t specular_flags = 0;
+    bool has_shade = false;
+    uint16_t shade_flags = 1;
+    bool has_stencil = false;
+    uint16_t stencil_flags = 0;
+    uint32_t stencil_ref = 0;
+    uint32_t stencil_mask = 0xFFFFFFFFu;
+    bool has_sort_adjust = false;
+    uint32_t sort_adjust_node_block = 0;
+    uint32_t sort_adjust_inheritance_depth = 0;
+    uint32_t sorting_mode = 0;
+};
+
+struct NifRenderNodeSource {
+    uint32_t block_index = 0;
+    std::string name;
+    std::string type_name;
+};
+
 struct NifRenderMaterial {
     std::string name;
     float ambient[3] = {0.25f, 0.25f, 0.25f};
@@ -52,6 +102,8 @@ struct NifRenderMaterial {
     float specular[4] = {0.0f, 0.0f, 0.0f, 10.0f};
     float emissive[3] = {0.0f, 0.0f, 0.0f};
     std::string diffuse_texture;
+    bool diffuse_texture_has_alpha_format = false;
+    uint32_t diffuse_texture_alpha_format = 0;
     bool diffuse_texture_has_clamp_mode = false;
     uint8_t diffuse_texture_clamp_mode = 3;
     NifTextureTransform diffuse_texture_transform;
@@ -78,6 +130,10 @@ struct NifRenderMaterial {
     bool has_alpha_property = false;
     uint16_t alpha_flags = 0;
     uint8_t alpha_threshold = 0;
+    // Direct properties preserve the legacy extraction behavior above. The
+    // resolved candidate includes inherited properties and their provenance.
+    NifRenderPropertySources direct_property_sources;
+    NifRenderAuthoredState resolved_state;
 };
 
 struct NifRenderMesh {
@@ -87,6 +143,10 @@ struct NifRenderMesh {
     std::string name;
     uint32_t source_mesh_block = 0;
     uint32_t source_node_block = 0;
+    // Geometry node first, followed by its ancestors toward the root.
+    std::vector<NifRenderNodeSource> source_node_chain;
+    bool parent_cycle_detected = false;
+    bool multiple_parents_detected = false;
     // True when the source NiTriShapeData/NiTriStripsData contained authored
     // vertex colors, independent of whether a renderer chooses to use them.
     bool has_vertex_colors = false;

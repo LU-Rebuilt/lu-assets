@@ -71,7 +71,9 @@ void write_source_texture_body(NifBuilder& b, int32_t filenameStringIdx) {
     b.u8(1);           // Use External = true
     b.s32(filenameStringIdx); // FilePath (NiFixedString)
     b.s32(-1);          // Pixel Data ref
-    b.u32(0); b.u32(0); b.u32(0); // FormatPrefs
+    b.u32(2);          // Pixel Layout
+    b.u32(1);          // Use Mipmaps
+    b.u32(2);          // Alpha Format = smooth/interpolated alpha
     b.u8(1);            // Is Static
     b.u8(1);            // Direct Render
     b.u8(0);            // Persist Render Data
@@ -144,6 +146,12 @@ TEST(NifTexturing, DecalThresholdsUseVersion20_2_0_5Rule) {
     ASSERT_EQ(nif.textures.size(), 1u);
     EXPECT_EQ(nif.textures[0].filename, "MegaMaelstrom2.dds");
     EXPECT_TRUE(nif.textures[0].use_external);
+    EXPECT_EQ(nif.textures[0].pixel_layout, 2u);
+    EXPECT_EQ(nif.textures[0].mipmap_format, 1u);
+    EXPECT_EQ(nif.textures[0].alpha_format, 2u);
+    EXPECT_TRUE(nif.textures[0].is_static);
+    EXPECT_TRUE(nif.textures[0].direct_render);
+    EXPECT_FALSE(nif.textures[0].persist_render_data);
 
     ASSERT_EQ(nif.texturing_properties.size(), 1u);
     EXPECT_EQ(nif.texturing_properties[0].base_texture_source_ref, 0);

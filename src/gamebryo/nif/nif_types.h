@@ -183,6 +183,12 @@ struct NifTextureRef {
     uint32_t block_index = 0;
     bool use_external = true;
     int32_t pixel_data_ref = -1; // block index of embedded NiPixelData, when !useExternal
+    uint32_t pixel_layout = 0;
+    uint32_t mipmap_format = 0;
+    uint32_t alpha_format = 0;
+    bool is_static = true;
+    bool direct_render = true;
+    bool persist_render_data = false;
 };
 
 // NiTexturingProperty -- the texture-slot table attached to a NiTriShape/NiTriStrips via its
@@ -219,6 +225,35 @@ struct NifAlphaProperty {
     uint32_t block_index = 0;
     uint16_t flags = 0;
     uint8_t threshold = 0;
+};
+
+// Packed NiProperty state used by LU's 20.3.0.9 NIFs. These structs preserve
+// the authored flags; consumers can decode them without re-reading block bytes.
+struct NifVertexColorProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 0;
+};
+
+struct NifZBufferProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 3;
+};
+
+struct NifSpecularProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 0;
+};
+
+struct NifShadeProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 1;
+};
+
+struct NifStencilProperty {
+    uint32_t block_index = 0;
+    uint16_t flags = 0;
+    uint32_t stencil_ref = 0;
+    uint32_t stencil_mask = 0xFFFFFFFFu;
 };
 
 // NiRangeLODData -- authored LOD center and distance ranges referenced by a NiLODNode.
@@ -296,6 +331,11 @@ struct NifNode {
     uint16_t lod_active_level = 0;      // Active level marker stored by newer Gamebryo files
     Vec3 lod_center;
     std::vector<std::pair<float, float>> lod_ranges; // (near, far) pairs
+
+    // NiSortAdjustNode-specific state. At LU's NIF version the accumulator
+    // reference was removed; only the subtree sorting mode remains.
+    bool has_sorting_mode = false;
+    uint32_t sorting_mode = 0; // 0 = inherit, 1 = sorting off
 };
 
 // Match group: list of vertex indices that share the same position (used for welding).
@@ -502,6 +542,11 @@ struct NifFile {
     std::vector<NifTextureRef> textures;
     std::vector<NifTexturingProperty> texturing_properties;
     std::vector<NifAlphaProperty> alpha_properties;
+    std::vector<NifVertexColorProperty> vertex_color_properties;
+    std::vector<NifZBufferProperty> z_buffer_properties;
+    std::vector<NifSpecularProperty> specular_properties;
+    std::vector<NifShadeProperty> shade_properties;
+    std::vector<NifStencilProperty> stencil_properties;
     // Authored NiRangeLODData blocks, used by render extraction to annotate
     // meshes with their file-provided LOD distance bands.
     std::vector<NifRangeLODData> range_lod_data;

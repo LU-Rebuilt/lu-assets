@@ -210,6 +210,19 @@ NifNode parse_ni_node(BinaryReader& r, uint32_t version,
     return node;
 }
 
+NifNode parse_ni_sort_adjust_node(BinaryReader& r, uint32_t version,
+                                  const std::vector<std::string>& string_table,
+                                  size_t block_end) {
+    NifNode node = parse_ni_node(r, version, string_table);
+    node.type_name = "NiSortAdjustNode";
+    if (r.pos() + 4 <= block_end) {
+        node.has_sorting_mode = true;
+        node.sorting_mode = r.read_u32();
+    }
+    // NiAccumulator was removed after 20.0.0.3 and is absent from LU 20.3.0.9.
+    return node;
+}
+
 // ============================================================================
 // NiLODNode: same as NiNode but with LOD center and range data
 // ============================================================================
@@ -667,15 +680,15 @@ NifTextureRef parse_source_texture(BinaryReader& r, uint32_t version,
     // both hold for LU's 20.3.0.9 regardless of use_external.
     tex.pixel_data_ref = r.read_s32();
 
-    r.read_u32(); // Format Prefs: Pixel Layout
-    r.read_u32(); // Format Prefs: Use Mipmaps
-    r.read_u32(); // Format Prefs: Alpha Format
-    r.read_u8();  // Is Static (byte)
+    tex.pixel_layout = r.read_u32();
+    tex.mipmap_format = r.read_u32();
+    tex.alpha_format = r.read_u32();
+    tex.is_static = r.read_u8() != 0;
     if (version >= 0x0A010067) { // since="10.1.0.103"
-        r.read_bool(); // Direct Render
+        tex.direct_render = r.read_bool();
     }
     if (version >= 0x14020004) { // since="20.2.0.4"
-        r.read_bool(); // Persist Render Data
+        tex.persist_render_data = r.read_bool();
     }
 
     return tex;
@@ -885,6 +898,35 @@ NifAlphaProperty parse_alpha_property(BinaryReader& r, uint32_t version,
     }
     if (r.pos() + 1 <= block_end) {
         prop.threshold = r.read_u8();
+    }
+    return prop;
+}
+
+template <typename T>
+T parse_packed_flags_property(BinaryReader& r, uint32_t version,
+                              const std::vector<std::string>& string_table,
+                              size_t block_end) {
+    T prop;
+    auto net = read_ni_object_net(r, version, string_table);
+    (void)net;
+    if (r.pos() + 2 <= block_end) {
+        prop.flags = r.read_u16();
+    }
+    return prop;
+}
+
+NifStencilProperty parse_stencil_property(BinaryReader& r, uint32_t version,
+                                          const std::vector<std::string>& string_table,
+                                          size_t block_end) {
+    NifStencilProperty prop;
+    auto net = read_ni_object_net(r, version, string_table);
+    (void)net;
+
+    // LU uses the 20.1.0.3+ packed layout: flags, stencil ref, stencil mask.
+    if (version >= 0x14010003) {
+        if (r.pos() + 2 <= block_end) prop.flags = r.read_u16();
+        if (r.pos() + 4 <= block_end) prop.stencil_ref = r.read_u32();
+        if (r.pos() + 4 <= block_end) prop.stencil_mask = r.read_u32();
     }
     return prop;
 }
@@ -1205,7 +1247,7 @@ NifFloatData parse_float_data(BinaryReader& r) {
 
 static const std::unordered_set<std::string> NODE_TYPES = {
     "NiNode", "NiBillboardNode", "NiSwitchNode", "RootCollisionNode",
-    "NiSortAdjustNode", "BSFadeNode"
+    "BSFadeNode"
 };
 
 } // anonymous namespace
@@ -1325,8 +1367,15 @@ NifFile nif_parse(std::span<const uint8_t> data) {
             ? nif.block_types[type_idx] : "";
 
         try {
+            // NiSortAdjustNode carries subtree sorting state after NiNode data.
+            if (type_name == "NiSortAdjustNode") {
+                NifNode node = parse_ni_sort_adjust_node(
+                    r, nif.version, nif.string_table, block_end);
+                node.block_index = block_idx;
+                nif.nodes.push_back(std::move(node));
+            }
             // NiNode and NiNode-like types (scene hierarchy)
-            if (NODE_TYPES.count(type_name)) {
+            else if (NODE_TYPES.count(type_name)) {
                 NifNode node = parse_ni_node(r, nif.version, nif.string_table);
                 node.type_name = type_name; // Preserve the specific type name
                 node.block_index = block_idx;
@@ -1381,6 +1430,36 @@ NifFile nif_parse(std::span<const uint8_t> data) {
                     parse_alpha_property(r, nif.version, nif.string_table, block_end);
                 prop.block_index = block_idx;
                 nif.alpha_properties.push_back(std::move(prop));
+            }
+            else if (type_name == "NiVertexColorProperty") {
+                NifVertexColorProperty prop = parse_packed_flags_property<NifVertexColorProperty>(
+                    r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.vertex_color_properties.push_back(std::move(prop));
+            }
+            else if (type_name == "NiZBufferProperty") {
+                NifZBufferProperty prop = parse_packed_flags_property<NifZBufferProperty>(
+                    r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.z_buffer_properties.push_back(std::move(prop));
+            }
+            else if (type_name == "NiSpecularProperty") {
+                NifSpecularProperty prop = parse_packed_flags_property<NifSpecularProperty>(
+                    r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.specular_properties.push_back(std::move(prop));
+            }
+            else if (type_name == "NiShadeProperty") {
+                NifShadeProperty prop = parse_packed_flags_property<NifShadeProperty>(
+                    r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.shade_properties.push_back(std::move(prop));
+            }
+            else if (type_name == "NiStencilProperty") {
+                NifStencilProperty prop = parse_stencil_property(
+                    r, nif.version, nif.string_table, block_end);
+                prop.block_index = block_idx;
+                nif.stencil_properties.push_back(std::move(prop));
             }
             // NiRangeLODData (LOD center and near/far distance table)
             else if (type_name == "NiRangeLODData") {
