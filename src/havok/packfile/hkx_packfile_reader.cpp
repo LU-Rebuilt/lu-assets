@@ -2,6 +2,7 @@
 #include "common/binary_reader/binary_reader.h"
 
 #include <cstring>
+#include <string>
 
 namespace lu::assets {
 

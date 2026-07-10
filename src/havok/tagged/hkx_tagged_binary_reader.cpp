@@ -1,6 +1,7 @@
 #include "havok/tagged/hkx_tagged_binary_reader.h"
 #include "common/binary_reader/binary_reader.h"
 
+#include <string>
 #include <unordered_set>
 
 namespace lu::assets {

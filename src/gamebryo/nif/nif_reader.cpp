@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <string>
 #include <unordered_set>
 
 namespace lu::assets {

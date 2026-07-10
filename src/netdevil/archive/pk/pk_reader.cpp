@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <functional>
 
 namespace lu::assets {
 

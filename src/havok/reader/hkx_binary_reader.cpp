@@ -12,6 +12,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <memory>
 
 namespace Hkx {
 

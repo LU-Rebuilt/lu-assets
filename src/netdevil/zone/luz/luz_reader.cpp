@@ -3,6 +3,7 @@
 #include "common/binary_reader/binary_reader.h"
 
 #include <algorithm>
+#include <string>
 
 namespace lu::assets {
 

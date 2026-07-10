@@ -1,7 +1,9 @@
 #include "netdevil/archive/sd0/sd0_writer.h"
 
 #include <zlib.h>
+#include <algorithm>
 #include <cstring>
+#include <string>
 
 namespace lu::assets {
 
