@@ -6,9 +6,9 @@
 //
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
-// (brick geometry), .hkx (binary packfile only — tagged-binary/XML HKX variants are
-// skipped, not round-tripped), and ForkParticle effect scripts (content-sniffed under a
-// plain ".txt" extension).
+// (brick geometry), .hkx (binary packfile AND tagged binary — XML HKX is skipped, not
+// round-tripped: zero real client files use it), and ForkParticle effect scripts
+// (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -51,6 +51,8 @@
 #include "lego/lxfml/lxfml_writer.h"
 #include "havok/packfile/hkx_packfile_reader.h"
 #include "havok/packfile/hkx_packfile_writer.h"
+#include "havok/tagged/hkx_tagged_binary_reader.h"
+#include "havok/tagged/hkx_tagged_binary_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -215,27 +217,15 @@ void check_sd0(const fs::path& path, FormatStats& stats) {
 }
 
 // .hkx ships in three format variants sharing one extension: binary packfile (magic
-// 0x57E0E057 0x10C0C010, round-tripped here), tagged binary (magic 0xCAB00D1E
-// 0xD011FACE), and XML. Only packfile is in scope for this project's round-trip
-// coverage; tagged-binary/XML files must be recognized and SKIPPED rather than fed to
-// the packfile reader (which would just throw a bad-magic error and get miscounted as a
-// parse failure). That "identify by magic, skip non-matching, round-trip the rest" shape
-// doesn't fit the generic check_file() dispatcher (which mismatches, rather than skips,
-// on wrong magic when an extension maps 1:1 to a format), so — like check_sd0() above —
-// .hkx gets its own function.
-void check_hkx_packfile(const fs::path& path, FormatStats& stats) {
-    auto data = read_file(path);
-    if (data.empty()) return;
-
-    static constexpr uint8_t packfile_magic[8] = {
-        0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10
-    };
-    if (data.size() < 8 || memcmp(data.data(), packfile_magic, 8) != 0) {
-        // Tagged-binary (0xCAB00D1E) or XML HKX — out of scope, not a failure.
-        stats.skipped++;
-        return;
-    }
-
+// 0x57E0E057 0x10C0C010) and tagged binary (magic 0xCAB00D1E 0xD011FACE) are both
+// round-tripped here (see src/havok/packfile/ and src/havok/tagged/ respectively); XML
+// HKX is out of scope for this project (zero real client files use it) and is
+// recognized and SKIPPED rather than fed to either reader (which would just throw a
+// bad-magic error and get miscounted as a parse failure). That "identify by magic, skip
+// non-matching, round-trip the rest" shape doesn't fit the generic check_file()
+// dispatcher (which mismatches, rather than skips, on wrong magic when an extension maps
+// 1:1 to a format), so — like check_sd0() above — .hkx gets its own function.
+void check_hkx_packfile(const std::vector<uint8_t>& data, const fs::path& path, FormatStats& stats) {
     std::vector<uint8_t> out;
     try {
         auto pf = lu::assets::hkx_packfile_parse(data);
@@ -259,6 +249,60 @@ void check_hkx_packfile(const fs::path& path, FormatStats& stats) {
                  path.string().c_str(), data.size(), out.size(), first_diff(data, out));
         stats.messages.push_back(buf);
     }
+}
+
+void check_hkx_tagged(const std::vector<uint8_t>& data, const fs::path& path, FormatStats& stats) {
+    std::vector<uint8_t> out;
+    try {
+        auto tf = lu::assets::hkx_tagged_binary_parse(data);
+        out = lu::assets::hkx_tagged_binary_write(tf);
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    if (out == data) {
+        stats.ok++;
+        return;
+    }
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
+    }
+}
+
+// Dispatches a .hkx file to the packfile or tagged-binary checker by magic, or skips it
+// (XML HKX, or anything else unrecognized) without counting it as a failure.
+void check_hkx(const fs::path& path, FormatStats& stats) {
+    auto data = read_file(path);
+    if (data.empty()) return;
+
+    static constexpr uint8_t packfile_magic[8] = {
+        0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10
+    };
+    static constexpr uint8_t tagged_magic[8] = {
+        0x1E, 0x0D, 0xB0, 0xCA, 0xCE, 0xFA, 0x11, 0xD0
+    };
+    if (data.size() < 8) {
+        stats.skipped++;
+        return;
+    }
+    if (memcmp(data.data(), packfile_magic, 8) == 0) {
+        check_hkx_packfile(data, path, stats);
+        return;
+    }
+    if (memcmp(data.data(), tagged_magic, 8) == 0) {
+        check_hkx_tagged(data, path, stats);
+        return;
+    }
+    // XML HKX (or anything else unrecognized) — out of scope, not a failure.
+    stats.skipped++;
 }
 
 // LXFML mismatches fall into two buckets: a genuine bug, or one of two documented,
@@ -546,7 +590,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             if (ext == ".hkx") {
-                check_hkx_packfile(e.path(), stats[".hkx"]);
+                check_hkx(e.path(), stats[".hkx"]);
                 continue;
             }
             // ForkParticle effect scripts ship as plain ".txt" (no distinguishing

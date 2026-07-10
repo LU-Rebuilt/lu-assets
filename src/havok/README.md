@@ -7,6 +7,8 @@
 
 HKX files contain Havok physics data in three possible formats: binary packfile, tagged binary, and XML. Each starts with a distinct magic signature. The LEGO Universe client ships HKX files in multiple Havok versions. HKX files store rigid body definitions, collision shapes (boxes, capsules, convex hulls, compressed meshes), physics systems, and optional scene graph data.
 
+This directory's `reader/`/`writer`/`converters` modules provide a semantic (but intentionally lossy) view of both binary variants for physics-object analysis. Separately, `packfile/` and `tagged/` each provide byte-perfect, container-level round-trip (parse original file -> write it back out -> identical bytes) for their respective format, verified against every real binary-packfile and tagged-binary `.hkx` file shipped by the LEGO Universe client (0 failures in both cases — see each module's own README for corpus survey methodology, byte layout tables, and format-specific quirks). XML HKX is out of scope for round-trip entirely: no real client file uses it.
+
 ## Binary Layout
 
 ### Binary Packfile Format
@@ -85,3 +87,5 @@ The HKX writer outputs **Havok 7.1.0** format by default (packfile version 7).
 
 - HKXDocs (github.com/SimonNitzsche/HKXDocs) — HKX format documentation
 - Ghidra RE of legouniverse.exe — Havok physics integration
+- `packfile/README.md` — binary packfile container byte layout and round-trip coverage
+- `tagged/README.md` — tagged binary container byte layout and round-trip coverage
