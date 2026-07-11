@@ -7,6 +7,13 @@
 
 FEV files are the FMOD Designer event project binary format. They contain a complete audio event hierarchy: banks, event categories, event groups, events (simple and complex), layers, sound instances, effect envelopes, parameters, sound definitions, waveform references, reverb definitions, and music data.
 
+All 42 real client files are the **FEV1** variant (magic `"FEV1"`). `fev_parse()`/`fev_write()` round-trip every one byte-for-byte. The RIFF-wrapped FEV variant (FMOD Designer 4.45) that `fev_parse()` can also read has zero real client files and is not written.
+
+Two music-data structures were corrected while building the writer (both had desynced the reader on `music_global.fev`, silently corrupting its music data):
+
+- **`cond` is a container, not an empty leaf.** It wraps zero or more nested condition items (`cprm`/`cms`). An empty `cond` is just an 8-byte item (length + tag); a non-empty one holds a `[length][cprm|cms]` sub-item. Treating it as an empty leaf left the nested item's length prefix to be misread as a garbage chunk tag.
+- **`smpm` (sample map) is a `u32` count followed by count × three `u32` entries**, not a single `u32`. It maps music segments/cues to sample indices (the first entry field matches the segment IDs used in `lnkd` chunks). Modeling it as one `u32` desynced the chunk loop on any file with a populated sample map.
+
 ## Binary Layout
 
 ```

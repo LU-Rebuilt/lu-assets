@@ -1,3 +1,4 @@
 target_sources(lu_assets PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/fev_reader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fev_writer.cpp
 )

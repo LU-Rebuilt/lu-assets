@@ -757,6 +757,19 @@ struct FevMdSmp {
     uint32_t index = 0;
 };
 
+// Sample map (smpm): a u32 count followed by count entries of three u32 each.
+// Maps music segments/cues to sample indices (the first entry field matches the
+// segment IDs used in lnkd chunks). An earlier version modeled smpm as a single u32,
+// which desynced the chunk loop on any file with a populated sample map.
+struct FevMdSmpmEntry {
+    uint32_t a = 0;
+    uint32_t b = 0;
+    uint32_t c = 0;
+};
+struct FevMdSmpm {
+    std::vector<FevMdSmpmEntry> entries;
+};
+
 // Link data (lnkd)
 struct FevMdLnkdTransitionBehavior {
     bool at_segment_end = false;
@@ -844,15 +857,16 @@ struct FevMusicDataChunk {
         FevMdThmd,                      // thmd
         FevMdEntl,                      // entl
         FevMdScnd,                      // scnd
-        uint32_t,                       // prmd, smpm
+        uint32_t,                       // prmd
         FevMdSgmd,                      // sgmd (note: also contains nested music data in sgmd_nested_items)
         FevMdSmph,                      // smph
         FevMdStr,                       // str
         FevMdSmp,                       // smp
+        FevMdSmpm,                      // smpm
         FevMdLnkd,                      // lnkd
         FevMdLfsd,                      // lfsd
         FevMdTlnd,                      // tlnd
-        std::monostate,                 // cond (empty)
+        std::monostate,                 // cond container (now stored as items vector) / unused
         FevMdCms,                       // cms
         FevMdCprm                       // cprm
     > body;

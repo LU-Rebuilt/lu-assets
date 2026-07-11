@@ -653,11 +653,16 @@ std::vector<FevMusicDataChunk> read_music_data_chunks(BinaryReader& r) {
         auto tag = r.read_bytes(4);
         chunk.type = std::string(reinterpret_cast<const char*>(tag.data()), 4);
 
-        // Container types: recurse into nested music_data items
+        // Container types: recurse into nested music_data items.
+        // "cond" is a container too: it holds zero or more condition items (cprm/cms).
+        // An empty cond (an 8-byte item: length + tag only) yields an empty item list;
+        // a non-empty cond wraps a nested [length][cprm|cms] item. Treating it as a
+        // leaf with an empty body (as an earlier version did) desynced the chunk loop,
+        // which then misread the nested item's length prefix as a garbage chunk tag.
         if (chunk.type == "comp" || chunk.type == "thms" || chunk.type == "cues" ||
             chunk.type == "scns" || chunk.type == "prms" || chunk.type == "sgms" ||
             chunk.type == "smps" || chunk.type == "smpf" || chunk.type == "lnks" ||
-            chunk.type == "tlns") {
+            chunk.type == "tlns" || chunk.type == "cond") {
             // Remaining data in this reader is the nested music data
             // Create a sub-reader for remaining bytes
             auto remaining_data = r.read_bytes(r.remaining());
@@ -791,9 +796,19 @@ std::vector<FevMusicDataChunk> read_music_data_chunks(BinaryReader& r) {
 
             chunk.body = std::move(str);
         }
-        // smpm: sample map (u32)
+        // smpm: sample map — u32 count then count × (u32, u32, u32) entries.
         else if (chunk.type == "smpm") {
-            chunk.body = r.read_u32();
+            FevMdSmpm smpm;
+            uint32_t count = r.read_u32();
+            smpm.entries.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                FevMdSmpmEntry e;
+                e.a = r.read_u32();
+                e.b = r.read_u32();
+                e.c = r.read_u32();
+                smpm.entries.push_back(e);
+            }
+            chunk.body = std::move(smpm);
         }
         // smp: sample reference
         else if (chunk.type == "smp ") {
@@ -841,10 +856,6 @@ std::vector<FevMusicDataChunk> read_music_data_chunks(BinaryReader& r) {
             FevMdTlnd tlnd;
             tlnd.timeline_id = r.read_u32();
             chunk.body = tlnd;
-        }
-        // cond: condition (empty body)
-        else if (chunk.type == "cond") {
-            chunk.body = std::monostate{};
         }
         // cms: condition match set
         else if (chunk.type == "cms ") {

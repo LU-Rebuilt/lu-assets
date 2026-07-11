@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "fmod/fev/fev_reader.h"
+#include "fmod/fev/fev_writer.h"
 
 #include <cstring>
 #include <vector>
@@ -1256,4 +1257,154 @@ TEST(FEV, MusicDataSettChunk) {
     auto& sett = std::get<FevMdSett>(nested[0].chunks[0].body);
     EXPECT_FLOAT_EQ(sett.volume, 0.8f);
     EXPECT_FLOAT_EQ(sett.reverb, 0.3f);
+}
+
+// ---------------------------------------------------------------------------
+// Writer / round-trip
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Build a minimal FEV whose strings use the REAL on-disk convention (length includes
+// a trailing NUL), so the writer reproduces it byte-for-byte. build_minimal_fev()
+// above writes strings without the NUL, which is fine for parse tests but not for a
+// byte-exact writer comparison.
+void write_real_string(FevBuilder& b, const std::string& s) {
+    if (s.empty()) { b.write_u32(0); return; }
+    b.write_u32(static_cast<uint32_t>(s.size() + 1));
+    b.write_bytes(s.data(), s.size());
+    b.write_u8(0);
+}
+
+std::vector<uint8_t> build_real_minimal_fev() {
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0xAABBCCDD);       // sound_def_names_pool_size
+    b.write_u32(0x11223344);       // waveform_names_pool_size
+    b.write_u32(1);                 // manifest count
+    b.write_u32(0x01); b.write_u32(1); // one manifest entry
+    write_real_string(b, "TestProject");
+    b.write_u32(1);                 // bank count
+    b.write_u32(0x00000100); b.write_s32(32); b.write_zeros(8);
+    write_real_string(b, "TestBank");
+    // Root category, no subcategories
+    write_real_string(b, "master");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);                 // 0 subcategories
+    b.write_u32(0);                 // 0 event groups
+    b.write_u32(0);                 // 0 sound def configs
+    b.write_u32(0);                 // 0 sound defs
+    b.write_u32(0);                 // 0 reverbs
+    // no music data
+    return b.data();
+}
+
+} // anonymous namespace
+
+TEST(FEV, WriteRoundTripsMinimalFile) {
+    auto data = build_real_minimal_fev();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsMusicDataContainers) {
+    // Reuse the sett-chunk music-data layout (no strings, so byte-exact) and confirm
+    // parse -> write reproduces it verbatim.
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);   // pool sizes
+    b.write_u32(0);                     // manifest
+    write_real_string(b, "");          // empty project name
+    b.write_u32(0);                     // banks
+    write_real_string(b, "root");      // root category name
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);                     // subcategories
+    b.write_u32(0);                     // event groups
+    b.write_u32(0); b.write_u32(0); b.write_u32(0); // configs/defs/reverbs
+
+    uint32_t sett_item_len = 4 + 4 + 4 + 4;   // len + "sett" + vol + rev
+    uint32_t outer_len = 4 + 4 + sett_item_len; // len + "comp" + sett item
+    b.write_u32(outer_len);
+    b.write_tag("comp");
+    b.write_u32(sett_item_len);
+    b.write_tag("sett");
+    b.write_f32(0.8f);
+    b.write_f32(0.3f);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsCondContainerWithCprm) {
+    // Regression: a "cond" chunk is a container wrapping a nested cprm item, not an
+    // empty leaf. Verify this exact nesting round-trips (it desynced the reader before).
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);
+    b.write_u32(0);
+    write_real_string(b, "");
+    b.write_u32(0);
+    write_real_string(b, "root");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0); b.write_u32(0); b.write_u32(0);
+
+    // cprm chunk body = condition_type(u16) + param_id(u32) + value_1(u32) + value_2(u32) = 14
+    uint32_t cprm_item_len = 4 + 4 + 14;        // len + "cprm" + body
+    uint32_t cond_item_len = 4 + 4 + cprm_item_len; // len + "cond" + nested cprm item
+    b.write_u32(cond_item_len);
+    b.write_tag("cond");
+    b.write_u32(cprm_item_len);
+    b.write_tag("cprm");
+    b.write_u16(0x0006);
+    b.write_u32(0x00020000);
+    b.write_u32(0x40399a9a);
+    b.write_u32(0x40466666);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsSmpmSampleMap) {
+    // Regression: "smpm" is a u32 count + count*(u32,u32,u32) sample-map entries, not a
+    // single u32. Verify a populated sample map round-trips.
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);
+    b.write_u32(0);
+    write_real_string(b, "");
+    b.write_u32(0);
+    write_real_string(b, "root");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0); b.write_u32(0); b.write_u32(0);
+
+    // smpm body = count(4) + 2 entries * 12 = 4 + 24 = 28
+    uint32_t smpm_item_len = 4 + 4 + 28;
+    b.write_u32(smpm_item_len);
+    b.write_tag("smpm");
+    b.write_u32(2);                     // count
+    b.write_u32(110); b.write_u32(0); b.write_u32(129);
+    b.write_u32(113); b.write_u32(1);  b.write_u32(41);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    ASSERT_EQ(fev.music_data.items.size(), 1u);
+    auto& smpm = std::get<FevMdSmpm>(fev.music_data.items[0].chunks[0].body);
+    ASSERT_EQ(smpm.entries.size(), 2u);
+    EXPECT_EQ(smpm.entries[0].a, 110u);
+    EXPECT_EQ(smpm.entries[1].c, 41u);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
 }

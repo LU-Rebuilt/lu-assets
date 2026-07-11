@@ -8,8 +8,8 @@
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
 // (brick geometry), .hkx (binary packfile AND tagged binary — XML HKX is skipped, not
 // round-tripped: zero real client files use it), .fsb (FMOD sound bank, full
-// decrypt+parse+write+encrypt path), and ForkParticle effect scripts (content-sniffed
-// under a plain ".txt" extension).
+// decrypt+parse+write+encrypt path), .fev (FMOD event project, FEV1 variant), and
+// ForkParticle effect scripts (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -54,6 +54,8 @@
 #include "havok/unified/hkx_writer.h"
 #include "fmod/fsb/fsb_reader.h"
 #include "fmod/fsb/fsb_writer.h"
+#include "fmod/fev/fev_reader.h"
+#include "fmod/fev/fev_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -529,6 +531,9 @@ int main(int argc, char* argv[]) {
     const RoundTripFunc brick_geom_rt = [](const std::vector<uint8_t>& d) {
         return lu::assets::brick_geometry_write(lu::assets::brick_geometry_parse(d));
     };
+    const RoundTripFunc fev_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::fev_write(lu::assets::fev_parse(d));
+    };
 
     struct Handler {
         const RoundTripFunc* fn;
@@ -557,6 +562,9 @@ int main(int argc, char* argv[]) {
         {".g", {&brick_geom_rt, {}}},
         {".g1", {&brick_geom_rt, {}}},
         {".g2", {&brick_geom_rt, {}}},
+        // FEV1 sound-event projects. The RIFF-wrapped FEV variant (no real client
+        // files) has a different magic and would be skipped as mis-extensioned.
+        {".fev", {&fev_rt, {"FEV1"}}},
     };
 
     std::map<std::string, FormatStats> stats;
