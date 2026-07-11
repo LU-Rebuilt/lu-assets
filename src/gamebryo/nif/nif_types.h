@@ -321,6 +321,31 @@ struct NifSkinInstance {
     std::vector<int32_t> bone_refs;
 };
 
+// One hardware-skinning partition. Bone indices are local to `bones`; the
+// vertex map resolves partition vertices back to the geometry vertex stream.
+struct NifSkinPartitionBlock {
+    uint16_t num_vertices = 0;
+    uint16_t num_triangles = 0;
+    uint16_t num_bones = 0;
+    uint16_t num_strips = 0;
+    uint16_t num_weights_per_vertex = 0;
+    std::vector<uint16_t> bones;
+    bool has_vertex_map = false;
+    std::vector<uint16_t> vertex_map;
+    bool has_vertex_weights = false;
+    std::vector<float> vertex_weights;
+    std::vector<uint16_t> strip_lengths;
+    bool has_faces = false;
+    bool has_bone_indices = false;
+    std::vector<uint8_t> bone_indices;
+};
+
+// NiSkinPartition -- renderer-ready vertex weights and palette-local indices.
+struct NifSkinPartition {
+    uint32_t block_index = 0;
+    std::vector<NifSkinPartitionBlock> partitions;
+};
+
 // Node in the scene hierarchy (NiNode, NiLODNode, NiTriShape, NiTriStrips).
 struct NifNode {
     std::string name;
@@ -576,6 +601,7 @@ struct NifFile {
     // GPU upload policy live in consumers.
     std::vector<NifSkinInstance> skin_instances;
     std::vector<NifSkinData> skin_data;
+    std::vector<NifSkinPartition> skin_partitions;
 
     // Resolves a node's base-slot texture filename by walking node.properties[] ->
     // NiTexturingProperty (matched by block_index) -> base_texture_source_ref ->

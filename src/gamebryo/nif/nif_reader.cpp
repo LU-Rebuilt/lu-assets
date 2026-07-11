@@ -362,6 +362,60 @@ NifSkinData parse_skin_data(BinaryReader& r) {
     return skin;
 }
 
+NifSkinPartition parse_skin_partition(BinaryReader& r) {
+    NifSkinPartition skin;
+    const uint32_t partition_count = r.read_u32();
+    skin.partitions.resize(partition_count);
+    for (NifSkinPartitionBlock& partition : skin.partitions) {
+        partition.num_vertices = r.read_u16();
+        partition.num_triangles = r.read_u16();
+        partition.num_bones = r.read_u16();
+        partition.num_strips = r.read_u16();
+        partition.num_weights_per_vertex = r.read_u16();
+
+        partition.bones.resize(partition.num_bones);
+        for (uint16_t& bone : partition.bones) bone = r.read_u16();
+
+        partition.has_vertex_map = r.read_bool();
+        if (partition.has_vertex_map) {
+            partition.vertex_map.resize(partition.num_vertices);
+            for (uint16_t& vertex : partition.vertex_map) vertex = r.read_u16();
+        }
+
+        partition.has_vertex_weights = r.read_bool();
+        if (partition.has_vertex_weights) {
+            const size_t count = static_cast<size_t>(partition.num_vertices) *
+                partition.num_weights_per_vertex;
+            partition.vertex_weights.resize(count);
+            for (float& weight : partition.vertex_weights) weight = r.read_f32();
+        }
+
+        partition.strip_lengths.resize(partition.num_strips);
+        uint32_t strip_index_count = 0;
+        for (uint16_t& strip_length : partition.strip_lengths) {
+            strip_length = r.read_u16();
+            strip_index_count += strip_length;
+        }
+
+        partition.has_faces = r.read_bool();
+        if (partition.has_faces) {
+            const size_t face_index_count = partition.num_strips > 0
+                ? strip_index_count
+                : static_cast<size_t>(partition.num_triangles) * 3;
+            for (size_t i = 0; i < face_index_count; ++i) (void)r.read_u16();
+        }
+
+        partition.has_bone_indices = r.read_bool();
+        if (partition.has_bone_indices) {
+            const size_t count = static_cast<size_t>(partition.num_vertices) *
+                partition.num_weights_per_vertex;
+            partition.bone_indices.resize(count);
+            for (uint8_t& bone_index : partition.bone_indices) bone_index = r.read_u8();
+        }
+    }
+    return skin;
+}
+
 // ============================================================================
 // NiTriShape / NiTriStrips: geometry container with data ref
 // ============================================================================
@@ -1498,6 +1552,11 @@ NifFile nif_parse(std::span<const uint8_t> data) {
                 NifSkinData skin = parse_skin_data(r);
                 skin.block_index = block_idx;
                 nif.skin_data.push_back(std::move(skin));
+            }
+            else if (type_name == "NiSkinPartition") {
+                NifSkinPartition skin = parse_skin_partition(r);
+                skin.block_index = block_idx;
+                nif.skin_partitions.push_back(std::move(skin));
             }
             // ---- Animation blocks (found in .kf files) ----
             // NiControllerSequence (animation clip definition)

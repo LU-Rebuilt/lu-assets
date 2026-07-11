@@ -445,6 +445,7 @@ void populate_skinning(
     const std::unordered_map<uint32_t, const NifNode*>& node_by_block,
     const std::unordered_map<uint32_t, const NifSkinInstance*>& skin_instances,
     const std::unordered_map<uint32_t, const NifSkinData*>& skin_data,
+    const std::unordered_map<uint32_t, const NifSkinPartition*>& skin_partitions,
     NifRenderMesh& out) {
 
     const NifSkinInstance* skin = find_by_block(skin_instances, node.skin_instance_ref);
@@ -485,6 +486,51 @@ void populate_skinning(
             [](const NifRenderSkinInfluence& a, const NifRenderSkinInfluence& b) {
                 return a.weight > b.weight;
             });
+    }
+
+    if (!data->has_vertex_weights) {
+        const NifSkinPartition* skin_partition =
+            find_by_block(skin_partitions, skin->skin_partition_ref);
+        if (skin_partition) {
+            for (const NifSkinPartitionBlock& partition : skin_partition->partitions) {
+                if (!partition.has_vertex_weights || !partition.has_bone_indices) continue;
+                const size_t weights_per_vertex = partition.num_weights_per_vertex;
+                for (size_t partition_vertex = 0;
+                     partition_vertex < partition.num_vertices;
+                     ++partition_vertex) {
+                    const size_t geometry_vertex = partition.has_vertex_map
+                        ? partition.vertex_map[partition_vertex]
+                        : partition_vertex;
+                    if (geometry_vertex >= out.vertex_influences.size()) continue;
+                    for (size_t slot = 0; slot < weights_per_vertex; ++slot) {
+                        const size_t value_index = partition_vertex * weights_per_vertex + slot;
+                        if (value_index >= partition.vertex_weights.size() ||
+                            value_index >= partition.bone_indices.size()) continue;
+                        const float weight = partition.vertex_weights[value_index];
+                        const uint8_t local_bone = partition.bone_indices[value_index];
+                        if (weight <= 0.0f || local_bone >= partition.bones.size()) continue;
+                        const uint16_t bone_index = partition.bones[local_bone];
+                        auto& influences = out.vertex_influences[geometry_vertex];
+                        auto existing = std::find_if(
+                            influences.begin(), influences.end(),
+                            [&](const NifRenderSkinInfluence& influence) {
+                                return influence.bone_index == bone_index;
+                            });
+                        if (existing == influences.end()) {
+                            influences.push_back({bone_index, weight});
+                        } else {
+                            existing->weight = std::max(existing->weight, weight);
+                        }
+                    }
+                }
+            }
+            for (auto& influences : out.vertex_influences) {
+                std::sort(influences.begin(), influences.end(),
+                    [](const NifRenderSkinInfluence& a, const NifRenderSkinInfluence& b) {
+                        return a.weight > b.weight;
+                    });
+            }
+        }
     }
 }
 
@@ -625,6 +671,10 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
     for (const auto& skin : nif.skin_data) {
         skin_data_by_block[skin.block_index] = &skin;
     }
+    std::unordered_map<uint32_t, const NifSkinPartition*> skin_partition_by_block;
+    for (const auto& skin : nif.skin_partitions) {
+        skin_partition_by_block[skin.block_index] = &skin;
+    }
 
     std::unordered_map<uint32_t, Transform> world_by_block;
     std::unordered_map<uint32_t, LodAssignment> lod_by_node;
@@ -718,7 +768,8 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
             vertex_color_by_block, z_buffer_by_block, specular_by_block,
             shade_by_block, stencil_by_block);
         populate_skinning(
-            node, src.vertices.size(), node_by_block, skin_instance_by_block, skin_data_by_block, out);
+            node, src.vertices.size(), node_by_block, skin_instance_by_block,
+            skin_data_by_block, skin_partition_by_block, out);
 
         out.vertices.reserve(src.vertices.size());
         for (size_t vertex_index = 0; vertex_index < src.vertices.size(); ++vertex_index) {

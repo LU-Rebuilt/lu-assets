@@ -1356,6 +1356,90 @@ TEST(NIF, RenderExtractionCarriesSkinInfluences) {
     EXPECT_FLOAT_EQ(out.vertex_influences[2][0].weight, 1.0f);
 }
 
+TEST(NIF, RenderExtractionCarriesSkinPartitionInfluences) {
+    NifFile nif;
+
+    NifNode root;
+    root.name = "SkeletonRoot";
+    root.type_name = "NiNode";
+    root.block_index = 0;
+    root.children = {1, 2, 3};
+    NifNode bone_a;
+    bone_a.name = "BoneA";
+    bone_a.type_name = "NiNode";
+    bone_a.block_index = 1;
+    NifNode bone_b;
+    bone_b.name = "BoneB";
+    bone_b.type_name = "NiNode";
+    bone_b.block_index = 2;
+    NifNode mesh_node;
+    mesh_node.name = "PartitionedMesh";
+    mesh_node.type_name = "NiTriShape";
+    mesh_node.block_index = 3;
+    mesh_node.data_ref = 4;
+    mesh_node.skin_instance_ref = 5;
+
+    NifMesh mesh;
+    mesh.block_index = 4;
+    mesh.vertices.resize(3);
+    mesh.triangles.push_back({0, 1, 2});
+
+    NifSkinInstance instance;
+    instance.block_index = 5;
+    instance.data_ref = 6;
+    instance.skin_partition_ref = 7;
+    instance.skeleton_root_ref = 0;
+    instance.bone_refs = {1, 2};
+    NifSkinData data;
+    data.block_index = 6;
+    data.has_vertex_weights = false;
+    data.bones.resize(2);
+
+    NifSkinPartition partition;
+    partition.block_index = 7;
+    NifSkinPartitionBlock block;
+    block.num_vertices = 3;
+    block.num_weights_per_vertex = 2;
+    block.bones = {1, 0};
+    block.has_vertex_map = true;
+    block.vertex_map = {2, 0, 1};
+    block.has_vertex_weights = true;
+    block.vertex_weights = {
+        1.0f, 0.0f,
+        0.25f, 0.75f,
+        0.0f, 1.0f
+    };
+    block.has_bone_indices = true;
+    block.bone_indices = {
+        0, 1,
+        0, 1,
+        0, 1
+    };
+    partition.partitions.push_back(block);
+
+    nif.nodes = {root, bone_a, bone_b, mesh_node};
+    nif.meshes = {mesh};
+    nif.skin_instances = {instance};
+    nif.skin_data = {data};
+    nif.skin_partitions = {partition};
+
+    auto extracted = extractNifRenderGeometry(nif);
+    ASSERT_EQ(extracted.meshes.size(), 1u);
+    const auto& influences = extracted.meshes[0].vertex_influences;
+    ASSERT_EQ(influences.size(), 3u);
+    ASSERT_EQ(influences[0].size(), 2u);
+    EXPECT_EQ(influences[0][0].bone_index, 0u);
+    EXPECT_FLOAT_EQ(influences[0][0].weight, 0.75f);
+    EXPECT_EQ(influences[0][1].bone_index, 1u);
+    EXPECT_FLOAT_EQ(influences[0][1].weight, 0.25f);
+    ASSERT_EQ(influences[1].size(), 1u);
+    EXPECT_EQ(influences[1][0].bone_index, 0u);
+    EXPECT_FLOAT_EQ(influences[1][0].weight, 1.0f);
+    ASSERT_EQ(influences[2].size(), 1u);
+    EXPECT_EQ(influences[2][0].bone_index, 1u);
+    EXPECT_FLOAT_EQ(influences[2][0].weight, 1.0f);
+}
+
 // ---- Round-trip (nif_write) ----
 
 #include "gamebryo/nif/nif_writer.h"
