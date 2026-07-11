@@ -29,7 +29,10 @@ Offset  Size  Type      Field
   Per bank:
   +0x00  4    u32       load_mode (0x80=stream, 0x100=decompress, 0x200=load)
   +0x04  4    s32       max_streams
-  +0x08  8    u32[2]    fsb_checksum — cross-checked against FSB header
+  +0x08  8    u32[2]    fsb_checksum — 8-byte truncated MD5 of the source filename;
+                        matches the paired FSB4 header's bank_checksums field
+                        (both independently derived, not runtime cross-checked —
+                        see fmod/fsb/README.md's "Header checksums" section)
   +0x10  var  u32+str   name
 
 --- Event Categories (recursive tree) ---
@@ -106,7 +109,7 @@ LU's version (0x00004000) exceeds all known thresholds, so all conditional field
 - Also accepts RIFF-wrapped FEV (magic `0x46464952`)
 - Events are either simple (single layer) or complex (multiple layers with parameters)
 - Effect envelopes control DSP properties (volume, pitch, pan) over parameter ranges
-- FSB bank checksums in the FEV must match the paired FSB file's header checksums
+- FSB bank checksums in the FEV match the paired FSB file's header checksums by construction (both are an MD5 of the same source filename, not a runtime cross-check)
 - Category volume is linear (1.0 = 0 dB); event volume is also linear
 - 3D flags use FMOD_MODE bitfield encoding
 

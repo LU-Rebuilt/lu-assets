@@ -106,12 +106,19 @@ enum class FevBankLoadMode : uint32_t {
 struct FevBank {
     FevBankLoadMode load_mode = FevBankLoadMode::DECOMPRESS_INTO_MEMORY;
     int32_t max_streams = 0;
-    // FSB-FEV bank matching checksums: two u32 values that are stored verbatim in
-    // the FSB4 header at the "reserved" field (offset 24, 8 bytes). FMOD Event reads
-    // these when loading a bank to verify the FSB was compiled from the same project
-    // as the FEV. Verified from SoundBank_StoreFevChecksum (FUN_10035780) @ 10035780
-    // in fmod_event.dll, and confirmed by decrypting LU's FSB files with
-    // fsb_extract_bank_checksums(). Use fev_verify_bank_checksum() to validate.
+    // Two u32 values matching the FSB4 header's "bank_checksums" field (offset 24,
+    // 8 bytes) in the paired FSB file — empirically confirmed matching in 102/102
+    // real LU banks. NOT a runtime cross-check FMOD Event performs when loading a
+    // bank: FUN_10035780 in fmod_event.dll (previously cited here as
+    // "SoundBank_StoreFevChecksum", the presumed verifier) was RE'd and its own
+    // Ghidra plate comment states plainly it's a name-pool allocator unrelated to
+    // checksums, not a hash comparison — that attribution was wrong. Separately, RE
+    // of fmod_designer.exe's FSB4 writer found the FSB-side field is an 8-byte
+    // truncated MD5 of the first sample's source filename (see fmod/fsb/fsb_types.h)
+    // — both files independently derive it from the same filename at build time,
+    // which fully explains the empirical match without any runtime verification
+    // occurring. fev_verify_bank_checksum() remains useful as a data-consistency
+    // check (same project export), just not a description of live engine behavior.
     uint32_t fsb_checksum[2] = {0, 0};
     std::string name;
 };
@@ -892,8 +899,11 @@ struct FevFile {
     // ambience_spaceship.fev sd=3264 wv=4040.  They represent total byte lengths
     // of the respective name string pools, baked in at FEV write time by FMOD Designer.
     //
-    // NOTE: Per-bank checksums (FevBank::fsb_checksum) ARE fully understood.
-    // See fsb_extract_bank_checksums() in fsb.h — verified 102/102 banks.
+    // NOTE: Per-bank checksums (FevBank::fsb_checksum) are understood as an 8-byte
+    // truncated MD5 of the source filename, matching the FSB4 header's
+    // bank_checksums field for the same reason (both derive it independently from
+    // the same filename) — see FevBank::fsb_checksum's comment for the corrected
+    // explanation and fsb_types.h for the FSB-side RE findings.
     uint32_t sound_def_names_pool_size = 0;  // Allocation hint for sounddef name strings
     uint32_t waveform_names_pool_size  = 0;  // Allocation hint for waveform name strings (unused at runtime)
 

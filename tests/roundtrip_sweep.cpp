@@ -7,8 +7,9 @@
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
 // (brick geometry), .hkx (binary packfile AND tagged binary — XML HKX is skipped, not
-// round-tripped: zero real client files use it), and ForkParticle effect scripts
-// (content-sniffed under a plain ".txt" extension).
+// round-tripped: zero real client files use it), .fsb (FMOD sound bank, full
+// decrypt+parse+write+encrypt path), and ForkParticle effect scripts (content-sniffed
+// under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -51,6 +52,8 @@
 #include "lego/lxfml/lxfml_writer.h"
 #include "havok/unified/hkx_reader.h"
 #include "havok/unified/hkx_writer.h"
+#include "fmod/fsb/fsb_reader.h"
+#include "fmod/fsb/fsb_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -193,6 +196,43 @@ void check_sd0(const fs::path& path, FormatStats& stats) {
     try {
         auto decompressed = lu::assets::sd0_decompress(data);
         out = lu::assets::sd0_compress(decompressed);
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    if (out == data) {
+        stats.ok++;
+        return;
+    }
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
+    }
+}
+
+// Standalone .fsb files: decrypt (all LU FSBs are encrypted), parse, write, then
+// re-encrypt and compare against the original on-disk bytes. The audio sample data
+// isn't modeled on FsbFile, so fsb_write needs the decrypted buffer to slice it from;
+// the full path exercises decrypt + parse + write + encrypt end to end.
+void check_fsb(const fs::path& path, FormatStats& stats) {
+    auto data = read_file(path);
+    if (data.empty()) return;
+
+    std::vector<uint8_t> dec = data;
+    bool was_encrypted = lu::assets::fsb_decrypt(dec);
+
+    std::vector<uint8_t> out;
+    try {
+        auto fsb = lu::assets::fsb_parse(dec);
+        auto out_dec = lu::assets::fsb_write(fsb, dec);
+        out = was_encrypted ? lu::assets::fsb_encrypt(out_dec) : std::move(out_dec);
     } catch (const std::exception& ex) {
         stats.parse_fail++;
         if (stats.messages.size() < 10) {
@@ -544,6 +584,10 @@ int main(int argc, char* argv[]) {
             }
             if (ext == ".hkx") {
                 check_hkx(e.path(), stats[".hkx"]);
+                continue;
+            }
+            if (ext == ".fsb") {
+                check_fsb(e.path(), stats[".fsb"]);
                 continue;
             }
             // ForkParticle effect scripts ship as plain ".txt" (no distinguishing

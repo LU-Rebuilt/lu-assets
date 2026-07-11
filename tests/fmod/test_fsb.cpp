@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "fmod/fsb/fsb_reader.h"
+#include "fmod/fsb/fsb_writer.h"
 #include "fmod/fev/fev_reader.h"
 
 #include <array>
@@ -426,4 +427,121 @@ TEST(FSB, ParseSetsEncryptedFlag) {
         std::string msg(e.what());
         EXPECT_NE(msg.find("encrypted"), std::string::npos);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Writer / round-trip
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Build a complete minimal decrypted FSB4 file: 48-byte header, one 80-byte sample
+// header, `header_padding` zero bytes, then `audio` bytes. Fields are chosen so the
+// header math is self-consistent (sample_header_size = 80 + header_padding).
+std::vector<uint8_t> build_fsb4_file(const std::string& sample_name,
+                                      uint32_t compressed_size,
+                                      const std::vector<uint8_t>& audio,
+                                      size_t header_padding = 0) {
+    std::vector<uint8_t> data;
+    auto u32 = [&](uint32_t v) { uint8_t b[4]; std::memcpy(b,&v,4); data.insert(data.end(),b,b+4); };
+    auto u16 = [&](uint16_t v) { uint8_t b[2]; std::memcpy(b,&v,2); data.insert(data.end(),b,b+2); };
+    auto f32 = [&](float v) { uint8_t b[4]; std::memcpy(b,&v,4); data.insert(data.end(),b,b+4); };
+
+    data.insert(data.end(), {'F','S','B','4'});
+    u32(1);                                            // num_samples
+    u32(static_cast<uint32_t>(80 + header_padding));   // sample_header_size
+    u32(static_cast<uint32_t>(audio.size()));          // data_size
+    u32(0x00040000u);                                  // version
+    u32(0x44u);                                        // mode
+    u32(0x11111111u);                                  // bank_checksums[0]
+    u32(0x22222222u);                                  // bank_checksums[1]
+    for (int i = 0; i < 16; ++i) data.push_back(static_cast<uint8_t>(0xA0 + i)); // header_reserved
+
+    // Sample header (80 bytes base)
+    u16(80);
+    { // 30-byte name field: name then zero padding (or exactly 30 bytes, no NUL)
+      size_t start = data.size();
+      for (char c : sample_name) { if (data.size() - start < 30) data.push_back(static_cast<uint8_t>(c)); }
+      while (data.size() - start < 30) data.push_back(0);
+    }
+    u32(44100);       // length_samples
+    u32(compressed_size);
+    u32(0);           // loop_start
+    u32(0xFFFFFFFF);  // loop_end
+    u32(0x02);        // mode
+    u32(44100);       // default_freq
+    u16(255);         // default_vol raw
+    u16(128);         // default_pan raw (center)
+    u16(128);         // default_pri
+    u16(1);           // num_channels
+    f32(1.0f);        // min_distance
+    f32(100.0f);      // max_distance
+    u32(100);         // var_freq
+    u16(0);           // var_vol
+    u16(0);           // var_pan
+
+    data.insert(data.end(), header_padding, 0);        // sample-header padding gap
+    data.insert(data.end(), audio.begin(), audio.end());
+    return data;
+}
+
+} // namespace
+
+TEST(FSB, WriteRoundTripsSimpleFile) {
+    std::vector<uint8_t> audio = {0xFF, 0xFB, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44};
+    auto data = build_fsb4_file("hit.wav", static_cast<uint32_t>(audio.size()), audio);
+    auto fsb = fsb_parse(data);
+    auto out = fsb_write(fsb, data);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FSB, WriteRoundTripsHeaderPaddingGap) {
+    // A real, occasionally-present 16-byte zero gap between the sample header and audio.
+    std::vector<uint8_t> audio = {0xAA, 0xBB, 0xCC, 0xDD};
+    auto data = build_fsb4_file("loop.wav", static_cast<uint32_t>(audio.size()), audio,
+                                /*header_padding=*/16);
+    auto fsb = fsb_parse(data);
+    ASSERT_EQ(fsb.sample_header_padding.size(), 16u);
+    auto out = fsb_write(fsb, data);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FSB, ParseHandlesExactly30ByteNameWithoutNul) {
+    // A 30-character name fills the field with NO NUL terminator — the reader must
+    // bound the name to 30 bytes rather than reading into the next field.
+    const std::string name30 = "GF_Gorilla_Breathing_Mad_1.wav"; // exactly 30 chars
+    ASSERT_EQ(name30.size(), 30u);
+    std::vector<uint8_t> audio = {0x01, 0x02, 0x03, 0x04};
+    auto data = build_fsb4_file(name30, static_cast<uint32_t>(audio.size()), audio);
+    auto fsb = fsb_parse(data);
+    ASSERT_EQ(fsb.samples.size(), 1u);
+    EXPECT_EQ(fsb.samples[0].name, name30);
+    // And it must round-trip byte-identically.
+    auto out = fsb_write(fsb, data);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FSB, WriteRejectsAudioBeyondBuffer) {
+    std::vector<uint8_t> audio = {0x01, 0x02, 0x03, 0x04};
+    auto data = build_fsb4_file("x.wav", 4, audio);
+    auto fsb = fsb_parse(data);
+    // Truncate the original buffer so the audio region no longer fits.
+    std::span<const uint8_t> truncated(data.data(), data.size() - 2);
+    EXPECT_THROW(fsb_write(fsb, truncated), FsbError);
+}
+
+TEST(FSB, EncryptIsInverseOfDecrypt) {
+    // fsb_encrypt then fsb_decrypt must reproduce the original plaintext, and the two
+    // are genuinely different operations (encrypt output != a second decrypt).
+    std::vector<uint8_t> audio;
+    for (int i = 0; i < 40; ++i) audio.push_back(static_cast<uint8_t>(i * 7 + 3));
+    auto plain = build_fsb4_file("snd.wav", static_cast<uint32_t>(audio.size()), audio);
+
+    auto enc = fsb_encrypt(plain);
+    EXPECT_NE(enc, plain);
+    EXPECT_NE(enc[0], 'F'); // magic scrambled
+
+    std::vector<uint8_t> dec(enc);
+    ASSERT_TRUE(fsb_decrypt(dec));
+    EXPECT_EQ(dec, plain);
 }
