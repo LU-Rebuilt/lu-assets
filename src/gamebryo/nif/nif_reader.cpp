@@ -833,7 +833,11 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
     if (textureCount > 5) {
         bool hasBump = r.read_bool();
         if (hasBump) {
-            read_tex_desc(r, version);
+            TexDescInfo desc = read_tex_desc(r, version);
+            prop.bump_texture_source_ref = desc.source_ref;
+            prop.bump_texture_has_clamp_mode = desc.has_clamp_mode;
+            prop.bump_texture_clamp_mode = desc.clamp_mode;
+            prop.bump_texture_transform = desc.transform;
             r.read_f32(); // Bump Map Luma Scale
             r.read_f32(); // Bump Map Luma Offset
             r.read_f32(); r.read_f32(); r.read_f32(); r.read_f32(); // Bump Map Matrix (2x2)
@@ -843,13 +847,23 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
     if (version >= 0x14020005) { // since="20.2.0.5"
         if (textureCount > 6) {
             bool hasNormal = r.read_bool();
-            if (hasNormal) read_tex_desc(r, version);
+            if (hasNormal) {
+                TexDescInfo desc = read_tex_desc(r, version);
+                prop.normal_texture_source_ref = desc.source_ref;
+                prop.normal_texture_has_clamp_mode = desc.has_clamp_mode;
+                prop.normal_texture_clamp_mode = desc.clamp_mode;
+                prop.normal_texture_transform = desc.transform;
+            }
         }
         if (textureCount > 7) {
             bool hasParallax = r.read_bool();
             if (hasParallax) {
-                read_tex_desc(r, version);
-                r.read_f32(); // Parallax Offset
+                TexDescInfo desc = read_tex_desc(r, version);
+                prop.parallax_texture_source_ref = desc.source_ref;
+                prop.parallax_texture_has_clamp_mode = desc.has_clamp_mode;
+                prop.parallax_texture_clamp_mode = desc.clamp_mode;
+                prop.parallax_texture_transform = desc.transform;
+                prop.parallax_offset = r.read_f32();
             }
         }
     }
@@ -871,8 +885,14 @@ NifTexturingProperty parse_texturing_property(BinaryReader& r, uint32_t version,
         for (uint32_t i = 0; i < numShaderTex; ++i) {
             bool hasMap = r.read_bool();
             if (hasMap) {
-                read_tex_desc(r, version);
-                r.read_u32(); // Map ID
+                TexDescInfo desc = read_tex_desc(r, version);
+                NifShaderTextureSlot slot;
+                slot.source_ref = desc.source_ref;
+                slot.has_clamp_mode = desc.has_clamp_mode;
+                slot.clamp_mode = desc.clamp_mode;
+                slot.transform = desc.transform;
+                slot.map_id = r.read_u32();
+                prop.shader_textures.push_back(slot);
             }
         }
     }

@@ -240,6 +240,52 @@ TEST(NifTexturing, TexDescPreservesTextureTransform) {
     EXPECT_FLOAT_EQ(transform.center.v, 0.25f);
 }
 
+TEST(NifTexturing, PreservesBumpNormalParallaxAndShaderTextureSlots) {
+    NifBuilder texBlock;
+    write_source_texture_body(texBlock, 0);
+    uint32_t texBlockSize = static_cast<uint32_t>(texBlock.data.size());
+
+    NifBuilder propBlock;
+    write_ni_object_net(propBlock, -1, -1);
+    propBlock.u16(0);
+    propBlock.u32(8);
+    propBlock.u8(0); // base
+    propBlock.u8(0); // dark
+    propBlock.u8(0); // detail
+    propBlock.u8(0); // gloss
+    propBlock.u8(0); // glow
+    propBlock.u8(1); write_tex_desc(propBlock, 0, 3); // bump
+    propBlock.f32(1.0f); propBlock.f32(0.0f);
+    propBlock.f32(1.0f); propBlock.f32(0.0f); propBlock.f32(0.0f); propBlock.f32(1.0f);
+    propBlock.u8(1); write_tex_desc(propBlock, 0, 2); // normal
+    propBlock.u8(1); write_tex_desc(propBlock, 0, 1); propBlock.f32(0.125f); // parallax
+    propBlock.u32(1); // shader texture count
+    propBlock.u8(1); write_tex_desc(propBlock, 0, 3); propBlock.u32(17);
+    uint32_t propBlockSize = static_cast<uint32_t>(propBlock.data.size());
+
+    NifBuilder b;
+    write_header(b,
+        {"NormalDepth.dds"},
+        {"NiSourceTexture", "NiTexturingProperty"},
+        {0, 1},
+        {texBlockSize, propBlockSize});
+    b.data.insert(b.data.end(), texBlock.data.begin(), texBlock.data.end());
+    b.data.insert(b.data.end(), propBlock.data.begin(), propBlock.data.end());
+    b.u32(0);
+
+    auto nif = nif_parse(b.data);
+    ASSERT_EQ(nif.texturing_properties.size(), 1u);
+    const auto& prop = nif.texturing_properties[0];
+    EXPECT_EQ(prop.bump_texture_source_ref, 0);
+    EXPECT_EQ(prop.normal_texture_source_ref, 0);
+    EXPECT_EQ(prop.parallax_texture_source_ref, 0);
+    EXPECT_FLOAT_EQ(prop.parallax_offset, 0.125f);
+    ASSERT_EQ(prop.shader_textures.size(), 1u);
+    EXPECT_EQ(prop.shader_textures[0].source_ref, 0);
+    EXPECT_EQ(prop.shader_textures[0].map_id, 17u);
+    EXPECT_EQ(prop.shader_textures[0].clamp_mode, 3);
+}
+
 // ResolveBaseTextureFilename walks node.properties[] -> NiTexturingProperty (by block_index) ->
 // base_texture_source_ref -> NifTextureRef (by block_index). This exercises the full chain via
 // a NiTriShape referencing a NiTexturingProperty referencing a NiSourceTexture, matching how a

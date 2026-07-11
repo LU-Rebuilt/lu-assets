@@ -30,6 +30,8 @@ struct NifExtractionResult {
 struct NifRenderVertex {
     float position[3] = {0, 0, 0};
     float normal[3] = {0, 1, 0};
+    float tangent[3] = {1, 0, 0};
+    float bitangent[3] = {0, 0, 1};
     float uv[2] = {0, 0};
     // Second authored UV channel when present; falls back to uv for consumers
     // that need stable texture coordinate data.
@@ -51,6 +53,14 @@ struct NifRenderPropertySource {
     uint32_t owner_node_block = 0;
     uint32_t inheritance_depth = 0; // 0 = geometry node, 1 = parent, ...
     uint32_t duplicates_on_owner = 0;
+};
+
+struct NifRenderShaderTexture {
+    std::string texture;
+    bool has_clamp_mode = false;
+    uint8_t clamp_mode = 3;
+    NifTextureTransform transform;
+    uint32_t map_id = 0;
 };
 
 struct NifRenderPropertySources {
@@ -125,6 +135,23 @@ struct NifRenderMaterial {
     bool glow_texture_has_clamp_mode = false;
     uint8_t glow_texture_clamp_mode = 3;
     NifTextureTransform glow_texture_transform;
+    std::string bump_texture;
+    bool bump_texture_has_clamp_mode = false;
+    uint8_t bump_texture_clamp_mode = 3;
+    NifTextureTransform bump_texture_transform;
+    std::string normal_texture;
+    bool normal_texture_has_clamp_mode = false;
+    uint8_t normal_texture_clamp_mode = 3;
+    NifTextureTransform normal_texture_transform;
+    std::string parallax_texture;
+    bool parallax_texture_has_clamp_mode = false;
+    uint8_t parallax_texture_clamp_mode = 3;
+    NifTextureTransform parallax_texture_transform;
+    float parallax_offset = 0.0f;
+    std::vector<NifRenderShaderTexture> shader_textures;
+    // File-level external NiSourceTexture candidates retained for legacy
+    // shader bindings that are not represented by NiTexturingProperty slots.
+    std::vector<std::string> source_textures;
     // Raw NiAlphaProperty state. Consumers decide how these bits map to a
     // render API's blend/test state; this parser only preserves authored data.
     bool has_alpha_property = false;

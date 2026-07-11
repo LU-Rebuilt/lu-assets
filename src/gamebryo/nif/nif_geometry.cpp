@@ -230,6 +230,19 @@ NifRenderMaterial build_material_for_node(
 
     NifRenderMaterial out = default_material();
 
+    std::vector<std::pair<uint32_t, std::string>> ordered_source_textures;
+    ordered_source_textures.reserve(textures.size());
+    for (const auto& [block_index, texture] : textures) {
+        if (texture && !texture->filename.empty()) {
+            ordered_source_textures.emplace_back(block_index, texture->filename);
+        }
+    }
+    std::sort(ordered_source_textures.begin(), ordered_source_textures.end());
+    out.source_textures.reserve(ordered_source_textures.size());
+    for (const auto& [_, filename] : ordered_source_textures) {
+        out.source_textures.push_back(filename);
+    }
+
     const auto direct_material = property_on_node(node, materials, 0);
     const auto direct_texturing = property_on_node(node, texturing_props, 0);
     const auto direct_alpha = property_on_node(node, alpha_props, 0);
@@ -296,6 +309,29 @@ NifRenderMaterial build_material_for_node(
         out.glow_texture_has_clamp_mode = tex_prop->glow_texture_has_clamp_mode;
         out.glow_texture_clamp_mode = tex_prop->glow_texture_clamp_mode;
         out.glow_texture_transform = tex_prop->glow_texture_transform;
+        out.bump_texture = texture_filename(textures, tex_prop->bump_texture_source_ref);
+        out.bump_texture_has_clamp_mode = tex_prop->bump_texture_has_clamp_mode;
+        out.bump_texture_clamp_mode = tex_prop->bump_texture_clamp_mode;
+        out.bump_texture_transform = tex_prop->bump_texture_transform;
+        out.normal_texture = texture_filename(textures, tex_prop->normal_texture_source_ref);
+        out.normal_texture_has_clamp_mode = tex_prop->normal_texture_has_clamp_mode;
+        out.normal_texture_clamp_mode = tex_prop->normal_texture_clamp_mode;
+        out.normal_texture_transform = tex_prop->normal_texture_transform;
+        out.parallax_texture = texture_filename(textures, tex_prop->parallax_texture_source_ref);
+        out.parallax_texture_has_clamp_mode = tex_prop->parallax_texture_has_clamp_mode;
+        out.parallax_texture_clamp_mode = tex_prop->parallax_texture_clamp_mode;
+        out.parallax_texture_transform = tex_prop->parallax_texture_transform;
+        out.parallax_offset = tex_prop->parallax_offset;
+        out.shader_textures.reserve(tex_prop->shader_textures.size());
+        for (const auto& slot : tex_prop->shader_textures) {
+            NifRenderShaderTexture render_slot;
+            render_slot.texture = texture_filename(textures, slot.source_ref);
+            render_slot.has_clamp_mode = slot.has_clamp_mode;
+            render_slot.clamp_mode = slot.clamp_mode;
+            render_slot.transform = slot.transform;
+            render_slot.map_id = slot.map_id;
+            out.shader_textures.push_back(std::move(render_slot));
+        }
     }
 
     const NifAlphaProperty* alpha = direct_alpha.value;
@@ -697,6 +733,14 @@ NifRenderExtractionResult extractNifRenderGeometry(const NifFile& nif) {
             rv.normal[0] = n.x;
             rv.normal[1] = n.y;
             rv.normal[2] = n.z;
+            Vec3 tangent = rotate_vec(transform.rotation, v.tangent);
+            Vec3 bitangent = rotate_vec(transform.rotation, v.bitangent);
+            rv.tangent[0] = tangent.x;
+            rv.tangent[1] = tangent.y;
+            rv.tangent[2] = tangent.z;
+            rv.bitangent[0] = bitangent.x;
+            rv.bitangent[1] = bitangent.y;
+            rv.bitangent[2] = bitangent.z;
             rv.uv[0] = v.u;
             rv.uv[1] = v.v;
             if (!src.extra_uv_sets.empty() && vertex_index < src.extra_uv_sets[0].size()) {

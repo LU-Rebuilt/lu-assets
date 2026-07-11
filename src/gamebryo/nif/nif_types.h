@@ -191,6 +191,14 @@ struct NifTextureRef {
     bool persist_render_data = false;
 };
 
+struct NifShaderTextureSlot {
+    int32_t source_ref = -1;
+    bool has_clamp_mode = false;
+    uint8_t clamp_mode = 3;
+    NifTextureTransform transform;
+    uint32_t map_id = 0;
+};
+
 // NiTexturingProperty -- the texture-slot table attached to a NiTriShape/NiTriStrips via its
 // properties[] list. lu-assets preserves authored source refs for slots that LU
 // shaders commonly use; renderer-specific meaning such as "dark map" vs
@@ -217,6 +225,20 @@ struct NifTexturingProperty {
     bool glow_texture_has_clamp_mode = false;
     uint8_t glow_texture_clamp_mode = 3;
     NifTextureTransform glow_texture_transform;
+    int32_t bump_texture_source_ref = -1;
+    bool bump_texture_has_clamp_mode = false;
+    uint8_t bump_texture_clamp_mode = 3;
+    NifTextureTransform bump_texture_transform;
+    int32_t normal_texture_source_ref = -1;
+    bool normal_texture_has_clamp_mode = false;
+    uint8_t normal_texture_clamp_mode = 3;
+    NifTextureTransform normal_texture_transform;
+    int32_t parallax_texture_source_ref = -1;
+    bool parallax_texture_has_clamp_mode = false;
+    uint8_t parallax_texture_clamp_mode = 3;
+    NifTextureTransform parallax_texture_transform;
+    float parallax_offset = 0.0f;
+    std::vector<NifShaderTextureSlot> shader_textures;
 };
 
 // NiAlphaProperty -- authored alpha state attached through NifNode::properties.
