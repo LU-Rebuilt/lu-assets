@@ -155,6 +155,30 @@ std::pair<std::vector<uint8_t>, uint32_t> build_ninode_nif() {
     return {b.data, block_size};
 }
 
+std::vector<uint8_t> build_rotated_ninode_nif() {
+    NifBuilder block;
+    write_ni_object_net(block, 0, -1);
+    block.u16(0x000E);
+    block.f32(0.0f); block.f32(0.0f); block.f32(0.0f);
+    // Positive 90-degree active rotation around Z. This is the same rotation
+    // represented by a KF quaternion (w=+sqrt(1/2), z=+sqrt(1/2)).
+    block.f32(0.0f); block.f32(-1.0f); block.f32(0.0f);
+    block.f32(1.0f); block.f32( 0.0f); block.f32(0.0f);
+    block.f32(0.0f); block.f32( 0.0f); block.f32(1.0f);
+    block.f32(1.0f);
+    block.u32(0);
+    block.s32(-1);
+    block.u32(0);
+    block.u32(0);
+
+    NifBuilder b;
+    write_header(b, {"RotatedNode"}, {"NiNode"}, {0},
+                 {static_cast<uint32_t>(block.data.size())});
+    b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0);
+    return b.data;
+}
+
 // Build a NIF with a NiNode that has children, to test the u16 flags fix.
 // If flags were read as u32, the parser would consume 2 extra bytes from translation,
 // causing all subsequent fields to be misaligned and the children count to be garbage.
@@ -334,6 +358,16 @@ TEST(NIF, ParseNiAlphaProperty) {
     EXPECT_EQ(nif.alpha_properties[0].flags, 0x00EDu);
     EXPECT_EQ(nif.alpha_properties[0].threshold, 128u);
     EXPECT_EQ(nif.alpha_properties[0].block_index, 0u);
+}
+
+TEST(NIF, NodeRotationMatrixMatchesKfQuaternionConvention) {
+    const auto nif = nif_parse(build_rotated_ninode_nif());
+    ASSERT_EQ(nif.nodes.size(), 1u);
+    constexpr float kSqrtHalf = 0.70710678f;
+    EXPECT_NEAR(nif.nodes[0].rotation.x, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(nif.nodes[0].rotation.y, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(nif.nodes[0].rotation.z, kSqrtHalf, 1.0e-5f);
+    EXPECT_NEAR(nif.nodes[0].rotation.w, kSqrtHalf, 1.0e-5f);
 }
 
 TEST(NIF, ParsePackedRenderProperties) {
