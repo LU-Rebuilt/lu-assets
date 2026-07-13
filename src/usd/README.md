@@ -18,7 +18,8 @@ Phased effort.
 |-------|-------|-------|
 | 1 | NIF → USD (mesh, materials, textures, vertex colors) | **done** |
 | 2 | USD → NIF import (client-accepts fidelity bar) | **done** |
-| 3 | KF/ETK animation (UsdSkel) + HKX collision | planned |
+| 3a | KF animation → UsdSkel | **done** |
+| 3b | HKX collision → USD | planned |
 | 4 | CDClient object composition (gather a LOT's NIF + textures + anims + physics into one stage, and back) | planned |
 
 ## `nif_to_usd`
@@ -87,6 +88,36 @@ Not yet imported: skeletons/skinning, animation, collision, LOD nodes, and
 multi-level hierarchy (a flat root-node scene is emitted). Round-trip verified
 on the client corpus: geometry (vertex/triangle counts, positions, UVs),
 material colours and texture paths survive NIF → USD → NIF.
+
+## `kf_to_usd`
+
+`kf_to_usd(kf, out_path, source_name, options)` exports a NIF/KF file's
+animation clips to a UsdSkel stage. LU KF files parse through the same NIF
+container (`nif_parse`); each holds one or more `NiControllerSequence` clips that
+target scene nodes *by name* with per-node `NiTransformInterpolator` →
+`NiTransformData` translation/rotation/scale keyframes.
+
+Mapping:
+
+```
+SkelRoot "/anim"
+  ├─ Skeleton        (flat joint set = union of targeted node names)
+  ├─ SkelAnimation "anim_<clip0>"
+  ├─ SkelAnimation "anim_<clip1>"
+  └─ …
+```
+
+Each clip becomes a `UsdSkelAnimation` with per-joint translate/rotate/scale
+time samples, sampled at the union of the clip's key times; timing maps to stage
+start/end time codes at `timeCodesPerSecond` (default 30). Rotation quats are
+reordered to USD's (w,x,y,z); the shortest-arc nlerp is used between keys. A KF
+clip carries target names, not a bind hierarchy, so the skeleton is flat with
+identity bind/rest transforms — enough for playback; a real bind pose comes from
+the paired model (composed together in the CDClient object phase).
+
+Multiple clips land in one stage (all `SkelAnimation`s under one skeleton), so a
+model's whole animation set exports to a single container. Verified on the
+client corpus: 120/120 sampled KF files export and validate under `usdchecker`.
 
 ## OpenUSD resolution
 

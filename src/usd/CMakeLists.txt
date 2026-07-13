@@ -124,6 +124,7 @@ endif()
 add_library(lu_assets_usd
     ${CMAKE_CURRENT_SOURCE_DIR}/nif_to_usd.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/usd_to_nif.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/kf_to_usd.cpp
 )
 # src/ (parent of src/usd) as the include root so headers resolve as
 # "usd/nif_to_usd.h", matching how the core library's own headers are included
