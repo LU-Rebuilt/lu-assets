@@ -121,6 +121,14 @@ struct FevBank {
     // check (same project export), just not a description of live engine behavior.
     uint32_t fsb_checksum[2] = {0, 0};
     std::string name;
+
+    // RIFF FEV only: banks store a per-language checksum array of
+    // lang_count × (ck0, ck1, unk) u32 triples. fsb_checksum above mirrors
+    // language 0's (ck0, ck1) for the shared verify path; this vector holds the
+    // full array (all languages, including the third u32 per entry) so the RIFF
+    // writer can reproduce it exactly. Empty for FEV1 banks.
+    struct LangChecksum { uint32_t ck0 = 0, ck1 = 0, unk = 0; };
+    std::vector<LangChecksum> lang_checksums;
 };
 
 // ---------------------------------------------------------------------------
@@ -179,6 +187,93 @@ struct FevEffectEnvelopePoint {
     uint32_t position = 0;
     float value = 0.0f;
     FevCurveShape curve_shape = FevCurveShape::LINEAR;
+    // RIFF FEV only: the normalized x coordinate (0..1) from the EPRP chunk.
+    // FEV1 uses the integer `position` field instead; eprp_x stays 0 there.
+    float eprp_x = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
+// RIFF-wrapped FEV container preservation (see FevFile::riff)
+// ---------------------------------------------------------------------------
+//
+// The RIFF FEV variant (FMOD Designer 4.45, FMT version 0x00450000) splits the
+// data the FEV1 format stores inline across several RIFF chunks:
+//
+//   RIFF "FEV " {
+//     FMT   — 4-byte format/version word (0x00450000)
+//     LIST "PROJ" {
+//       OBCT — object-count manifest (same (type,value) pairs as FEV1)
+//       PROP — project name (u32-length-prefixed string)
+//       LGCY — the "legacy" body: the whole FEV1 structure MINUS the header,
+//              manifest, and project name, and with three transforms:
+//                * event/group/parameter names become u32 STRR indices,
+//                * effect-envelope points are position-only (value+curve moved
+//                  to EPRP), and the inline envelope name / flags2 / mapping
+//                  fields are dropped,
+//                * banks carry a per-language checksum array.
+//       EPRP — flat array of full envelope-point records (position, value,
+//              curve_shape) in envelope-traversal order — the value/curve data
+//              omitted from LGCY. count == total envelope points in the file.
+//       STRR — string reference table: names indexed by u32 from LGCY.
+//       LANG — language list: u32 count + count u32-prefixed language names,
+//              padded to the chunk size. lang_count matches the per-bank arrays.
+//     }
+//   }
+//
+// To reproduce a RIFF FEV byte-for-byte the writer re-serializes LGCY, OBCT,
+// PROP, EPRP, STRR and LANG from the parsed model, and replays FMT / chunk
+// ordering / word-alignment padding captured here. STRR is preserved verbatim
+// (offset table + pool bytes) so u32 indices in LGCY map back to the SAME slot
+// they came from rather than a re-deduplicated ordering.
+struct FevRiffData {
+    // FMT chunk payload (the format/version word, e.g. 0x00450000). Kept as raw
+    // bytes since the chunk size is a fixed 4 in every observed file but the
+    // field is replayed verbatim regardless.
+    std::vector<uint8_t> fmt_bytes;
+
+    // STRR table, preserved verbatim for exact index round-trip:
+    //   count(u32) + offsets[count](u32) + string pool bytes.
+    // strr_strings mirrors the decoded pool for reader convenience (names[idx]).
+    std::vector<uint32_t> strr_offsets;
+    std::vector<uint8_t>  strr_pool;      // raw string pool bytes after the offset table
+    std::vector<std::string> strr_strings; // decoded, index-aligned with strr_offsets
+
+    // LANG chunk payload preserved verbatim (count + names + trailing padding).
+    std::vector<uint8_t> lang_bytes;
+
+    // EPRP chunk payload preserved verbatim: a flat array of full envelope-point
+    // records — count(u32) + count × (x:f32, y:f32, curve_shape:u32). These are
+    // the normalized (x in 0..1, y) curve coordinates omitted from LGCY (which
+    // stores only integer point positions). Preserved as raw bytes for exact
+    // round-trip; the semantic values are also surfaced on FevEffectEnvelope
+    // where the reader could correlate them.
+    std::vector<uint8_t> eprp_bytes;
+
+    // LGCY chunk payload preserved verbatim. The LGCY body is the full FEV1
+    // structure (minus header/manifest/project-name) re-encoded with the RIFF
+    // transforms (STRR name indices, +3 version-gated u32 in each event header,
+    // position-only envelopes with a 5-word header + 2-word tail, +2
+    // version-gated u32 per sound-definition config, STRR-indexed sound-def
+    // names). The transforms are fully mapped (see README) and the semantic
+    // reader decodes them into the FevFile fields; however LGCY is ALSO retained
+    // verbatim here so the writer reproduces it byte-for-byte regardless of any
+    // as-yet-unmapped version-gated field a future FEV revision might add. This
+    // matches the raw-block preservation pattern used elsewhere in this codebase
+    // (FSB sample data, PSB payload, Gamebryo raw blocks).
+    std::vector<uint8_t> lgcy_bytes;
+
+    // Number of languages (from LANG / per-bank checksum arrays).
+    uint32_t lang_count = 1;
+
+    // RIFF chunk ordering inside LIST "PROJ", by 4-char id ("OBCT","PROP",...).
+    // Replayed in this exact order; unknown/extra chunks are preserved verbatim
+    // in extra_chunks and emitted at their recorded position.
+    std::vector<std::string> chunk_order;
+
+    // Any chunk the model does not re-serialize (none in the observed corpus) is
+    // stored here verbatim keyed by 4-char id, and written back in chunk_order.
+    struct RawChunk { std::string id; std::vector<uint8_t> payload; };
+    std::vector<RawChunk> extra_chunks;
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +306,14 @@ struct FevEffectEnvelope {
     std::vector<FevEffectEnvelopePoint> points;
     uint8_t mapping_data[4] = {};         // Raw mapping bytes stored at envelope's mapping offset
     uint32_t enabled = 0;                 // 0 = disabled, nonzero = enabled (version >= 0x1a0000)
+
+    // RIFF FEV only: version-gated words that surround the point list in the
+    // LGCY encoding. riff_extra sit between dsp_effect_index/envelope_flags and
+    // before point_count; riff_tail follow the positions (riff_tail[1] is the
+    // enabled flag). Always 0 except riff_tail[1] in the observed corpus.
+    // Unused (0) for FEV1. See FevRiffData / README for the full layout.
+    uint32_t riff_extra[2] = {0, 0};
+    uint32_t riff_tail[2] = {0, 0};
 };
 
 // ---------------------------------------------------------------------------
@@ -311,6 +414,10 @@ struct FevEventParameterFlags {
 
 struct FevEventParameter {
     std::string name;
+    // RIFF FEV only: the u32 STRR index this name was read from, so the writer
+    // reproduces the exact same index (STRR may hold duplicate strings at
+    // different slots). -1 for FEV1 (inline string). See FevFile::riff.
+    int32_t name_strr_index = -1;
     float velocity = 0.0f;
     float minimum_value = 0.0f;
     float maximum_value = 0.0f;
@@ -415,6 +522,9 @@ enum class FevEventType : uint32_t {
 struct FevEvent {
     FevEventType event_type = FevEventType::SIMPLE;
     std::string name;
+    // RIFF FEV only: STRR index the name was read from (-1 for FEV1). See
+    // FevEventParameter::name_strr_index.
+    int32_t name_strr_index = -1;
     uint8_t guid[16] = {};
     // Linear volume multiplier (1.0 = unity gain = 0 dB).
     // Same unit as FevEventCategory::volume and FevSoundDefinitionConfig::volume.
@@ -468,6 +578,13 @@ struct FevEvent {
     // Ghidra: EventGroupI_loadFromBuffer @ 10011660, category read @ ~10012300.
     uint32_t category_instance_count = 0;
     std::string category;
+
+    // RIFF FEV only: version-gated u32 fields not present in FEV1's event layout.
+    // riff_extra_after_flags sit between event_flags and the speaker levels;
+    // riff_extra_before_layers sits after threed_position_randomization and
+    // before the layer list. All 0 in the observed corpus. Unused for FEV1.
+    uint32_t riff_extra_after_flags[2] = {0, 0};
+    uint32_t riff_extra_before_layers = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -476,6 +593,9 @@ struct FevEvent {
 
 struct FevEventGroup {
     std::string name;
+    // RIFF FEV only: STRR index the name was read from (-1 for FEV1). See
+    // FevEventParameter::name_strr_index.
+    int32_t name_strr_index = -1;
     std::vector<FevUserProperty> user_properties;
     std::vector<FevEventGroup> subgroups;
     std::vector<FevEvent> events;
@@ -529,6 +649,8 @@ struct FevSoundDefinitionConfig {
     uint16_t trigger_delay_min = 0;
     uint16_t trigger_delay_max = 0;
     uint16_t spawn_count = 0;
+    // RIFF FEV only: two version-gated trailing u32 (0 in the corpus). FEV1 = 0.
+    uint32_t riff_extra[2] = {0, 0};
 };
 
 // ---------------------------------------------------------------------------
@@ -580,6 +702,8 @@ struct FevWaveform {
 
 struct FevSoundDefinition {
     std::string name;
+    // RIFF FEV only: STRR index the name was read from (-1 for FEV1 inline name).
+    int32_t name_strr_index = -1;
     uint32_t config_index = 0;
     std::vector<FevWaveform> waveforms;
 };
@@ -930,5 +1054,13 @@ struct FevFile {
     std::vector<FevSoundDefinition> sound_definitions;
     std::vector<FevReverbDefinition> reverb_definitions;
     FevMusicData music_data;
+
+    // Set when the source file was RIFF-wrapped (magic "RIFF"/"FEV ") rather
+    // than flat FEV1 (magic "FEV1"). fev_write() dispatches on this: a RIFF-origin
+    // file is written back through the RIFF container path (reproducing STRR,
+    // EPRP, LANG, per-language checksums and chunk framing), a FEV1-origin file
+    // through the flat path. The two paths are byte-perfect for their own origin.
+    bool is_riff = false;
+    FevRiffData riff; // populated only when is_riff
 };
 } // namespace lu::assets

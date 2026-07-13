@@ -10,6 +10,20 @@ namespace lu::assets {
 namespace {
 
 // ---------------------------------------------------------------------------
+// Write context — mirrors the reader's FevParseContext.
+// ---------------------------------------------------------------------------
+// In RIFF mode, indexed names are written as u32 STRR indices (not inline
+// strings), effect-envelope points are written position-only (their full
+// records are collected into eprp for the separate EPRP chunk), and banks use
+// per-language checksum arrays. In FEV1 mode everything is inline.
+struct FevWriteContext {
+    bool riff = false;
+    // Collects (position, value, curve) for every envelope point in traversal
+    // order — becomes the EPRP chunk. Only used in RIFF mode.
+    std::vector<const FevEffectEnvelopePoint*> eprp;
+};
+
+// ---------------------------------------------------------------------------
 // String helpers (mirror read_fev_string / read_null_terminated_string)
 // ---------------------------------------------------------------------------
 
@@ -33,6 +47,17 @@ void write_fev_string(BinaryWriter& w, const std::string& s) {
 void write_null_terminated_string(BinaryWriter& w, const std::string& s) {
     w.write_bytes(reinterpret_cast<const uint8_t*>(s.data()), s.size());
     w.write_u8(0);
+}
+
+// Write a name field: a u32 STRR index in RIFF mode (the exact slot recorded at
+// parse time in name_strr_index), an inline u32-prefixed string in FEV1 mode.
+void write_indexed_name(BinaryWriter& w, const std::string& name,
+                        int32_t strr_index, const FevWriteContext& ctx) {
+    if (ctx.riff) {
+        w.write_u32(static_cast<uint32_t>(strr_index));
+    } else {
+        write_fev_string(w, name);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -77,11 +102,32 @@ void write_event_category(BinaryWriter& w, const FevEventCategory& cat) {
 }
 
 // ---------------------------------------------------------------------------
-// Effect envelopes (FEV1 form only — RIFF is not written)
+// Effect envelopes
 // ---------------------------------------------------------------------------
 
-void write_effect_envelope(BinaryWriter& w, const FevEffectEnvelope& env) {
+void write_effect_envelope(BinaryWriter& w, const FevEffectEnvelope& env,
+                           FevWriteContext& ctx) {
     w.write_s32(env.control_parameter_index);
+
+    if (ctx.riff) {
+        // RIFF: no inline name, no flags2/mapping. 5-word header (dsp, extra,
+        // flags, extra), position-only points, 2-word tail. Full (x, y, curve)
+        // point records go to the EPRP chunk in this traversal order.
+        w.write_s32(env.dsp_effect_index);
+        w.write_u32(env.riff_extra[0]);
+        w.write_u32(env.envelope_flags);
+        w.write_u32(env.riff_extra[1]);
+        w.write_u32(static_cast<uint32_t>(env.points.size()));
+        for (const auto& pt : env.points) {
+            w.write_u32(pt.position);
+            ctx.eprp.push_back(&pt);
+        }
+        w.write_u32(env.riff_tail[0]);
+        w.write_u32(env.riff_tail[1]);
+        return;
+    }
+
+    // FEV1: inline name string, full point records, flags2 and mapping bytes.
     write_fev_string(w, env.name);
     w.write_s32(env.dsp_effect_index);
     w.write_u32(env.envelope_flags);
@@ -125,7 +171,8 @@ void write_sound_instance(BinaryWriter& w, const FevSoundInstance& si) {
 // Layers
 // ---------------------------------------------------------------------------
 
-void write_layer(BinaryWriter& w, const FevLayer& layer, bool is_simple_event) {
+void write_layer(BinaryWriter& w, const FevLayer& layer, bool is_simple_event,
+                 FevWriteContext& ctx) {
     if (!is_simple_event) {
         w.write_bytes(layer.layer_flags, 2);
         w.write_s16(layer.priority);
@@ -139,7 +186,7 @@ void write_layer(BinaryWriter& w, const FevLayer& layer, bool is_simple_event) {
         write_sound_instance(w, si);
     }
     for (const auto& env : layer.effect_envelopes) {
-        write_effect_envelope(w, env);
+        write_effect_envelope(w, env, ctx);
     }
 }
 
@@ -147,8 +194,9 @@ void write_layer(BinaryWriter& w, const FevLayer& layer, bool is_simple_event) {
 // Event parameters
 // ---------------------------------------------------------------------------
 
-void write_event_parameter(BinaryWriter& w, const FevEventParameter& param) {
-    write_fev_string(w, param.name);
+void write_event_parameter(BinaryWriter& w, const FevEventParameter& param,
+                           const FevWriteContext& ctx) {
+    write_indexed_name(w, param.name, param.name_strr_index, ctx);
     w.write_f32(param.velocity);
     w.write_f32(param.minimum_value);
     w.write_f32(param.maximum_value);
@@ -165,11 +213,11 @@ void write_event_parameter(BinaryWriter& w, const FevEventParameter& param) {
 // Events
 // ---------------------------------------------------------------------------
 
-void write_event(BinaryWriter& w, const FevEvent& ev) {
+void write_event(BinaryWriter& w, const FevEvent& ev, FevWriteContext& ctx) {
     w.write_u32(static_cast<uint32_t>(ev.event_type));
     bool is_simple = (ev.event_type == FevEventType::SIMPLE);
 
-    write_fev_string(w, ev.name);
+    write_indexed_name(w, ev.name, ev.name_strr_index, ctx);
     w.write_bytes(ev.guid, 16);
 
     w.write_f32(ev.volume);
@@ -185,6 +233,12 @@ void write_event(BinaryWriter& w, const FevEvent& ev) {
     w.write_f32(ev.threed_min_distance);
     w.write_f32(ev.threed_max_distance);
     w.write_bytes(ev.event_flags.raw, 4);
+
+    if (ctx.riff) {
+        // Two version-gated u32 between event_flags and speaker levels (RIFF).
+        w.write_u32(ev.riff_extra_after_flags[0]);
+        w.write_u32(ev.riff_extra_after_flags[1]);
+    }
 
     w.write_f32(ev.speaker_l);
     w.write_f32(ev.speaker_r);
@@ -216,21 +270,26 @@ void write_event(BinaryWriter& w, const FevEvent& ev) {
     w.write_f32(ev.threed_pan_level);
     w.write_u32(ev.threed_position_randomization);
 
+    if (ctx.riff) {
+        // One version-gated u32 before the layer list (RIFF).
+        w.write_u32(ev.riff_extra_before_layers);
+    }
+
     if (!is_simple) {
         w.write_u32(static_cast<uint32_t>(ev.layers.size()));
         for (const auto& layer : ev.layers) {
-            write_layer(w, layer, false);
+            write_layer(w, layer, false, ctx);
         }
     } else {
         // Simple event: a single layer with no header fields. The reader always
         // stores exactly one; guard so a hand-built struct can't emit a bad file.
-        write_layer(w, ev.layers.at(0), true);
+        write_layer(w, ev.layers.at(0), true, ctx);
     }
 
     if (!is_simple) {
         w.write_u32(static_cast<uint32_t>(ev.parameters.size()));
         for (const auto& param : ev.parameters) {
-            write_event_parameter(w, param);
+            write_event_parameter(w, param, ctx);
         }
 
         w.write_u32(static_cast<uint32_t>(ev.user_properties.size()));
@@ -247,8 +306,9 @@ void write_event(BinaryWriter& w, const FevEvent& ev) {
 // Event groups (recursive)
 // ---------------------------------------------------------------------------
 
-void write_event_group(BinaryWriter& w, const FevEventGroup& grp) {
-    write_fev_string(w, grp.name);
+void write_event_group(BinaryWriter& w, const FevEventGroup& grp,
+                       FevWriteContext& ctx) {
+    write_indexed_name(w, grp.name, grp.name_strr_index, ctx);
 
     w.write_u32(static_cast<uint32_t>(grp.user_properties.size()));
     for (const auto& up : grp.user_properties) {
@@ -259,10 +319,10 @@ void write_event_group(BinaryWriter& w, const FevEventGroup& grp) {
     w.write_u32(static_cast<uint32_t>(grp.events.size()));
 
     for (const auto& sub : grp.subgroups) {
-        write_event_group(w, sub);
+        write_event_group(w, sub, ctx);
     }
     for (const auto& ev : grp.events) {
-        write_event(w, ev);
+        write_event(w, ev, ctx);
     }
 }
 
@@ -270,7 +330,8 @@ void write_event_group(BinaryWriter& w, const FevEventGroup& grp) {
 // Sound definition configs
 // ---------------------------------------------------------------------------
 
-void write_sound_definition_config(BinaryWriter& w, const FevSoundDefinitionConfig& cfg) {
+void write_sound_definition_config(BinaryWriter& w, const FevSoundDefinitionConfig& cfg,
+                                   const FevWriteContext& ctx) {
     w.write_u32(static_cast<uint32_t>(cfg.play_mode));
     w.write_u32(cfg.spawn_time_min);
     w.write_u32(cfg.spawn_time_max);
@@ -290,6 +351,11 @@ void write_sound_definition_config(BinaryWriter& w, const FevSoundDefinitionConf
     w.write_u16(cfg.trigger_delay_min);
     w.write_u16(cfg.trigger_delay_max);
     w.write_u16(cfg.spawn_count);
+    if (ctx.riff) {
+        // Two version-gated trailing u32 (RIFF config).
+        w.write_u32(cfg.riff_extra[0]);
+        w.write_u32(cfg.riff_extra[1]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -321,8 +387,10 @@ void write_waveform(BinaryWriter& w, const FevWaveform& wf) {
     }
 }
 
-void write_sound_definition(BinaryWriter& w, const FevSoundDefinition& sd) {
-    write_fev_string(w, sd.name);
+void write_sound_definition(BinaryWriter& w, const FevSoundDefinition& sd,
+                            const FevWriteContext& ctx) {
+    // RIFF stores the sound-definition name as a u32 STRR index; FEV1 inline.
+    write_indexed_name(w, sd.name, sd.name_strr_index, ctx);
     w.write_u32(sd.config_index);
     w.write_u32(static_cast<uint32_t>(sd.waveforms.size()));
     for (const auto& wf : sd.waveforms) {
@@ -525,10 +593,43 @@ void write_music_data_items(BinaryWriter& w, const std::vector<FevMusicDataItem>
     }
 }
 
-} // namespace
+// Common tail shared by FEV1 and RIFF-LGCY: root category, event groups, sound
+// definition configs/definitions, reverb definitions, music data. The only
+// difference between the two forms is handled inside the element writers via
+// ctx.riff (indexed names, position-only envelopes, EPRP collection).
+void write_fev_body_tail(BinaryWriter& w, const FevFile& fev, FevWriteContext& ctx) {
+    write_event_category(w, fev.root_category);
 
-std::vector<uint8_t> fev_write(const FevFile& fev) {
+    w.write_u32(static_cast<uint32_t>(fev.event_groups.size()));
+    for (const auto& grp : fev.event_groups) {
+        write_event_group(w, grp, ctx);
+    }
+
+    w.write_u32(static_cast<uint32_t>(fev.sound_definition_configs.size()));
+    for (const auto& cfg : fev.sound_definition_configs) {
+        write_sound_definition_config(w, cfg, ctx);
+    }
+
+    w.write_u32(static_cast<uint32_t>(fev.sound_definitions.size()));
+    for (const auto& sd : fev.sound_definitions) {
+        write_sound_definition(w, sd, ctx);
+    }
+
+    w.write_u32(static_cast<uint32_t>(fev.reverb_definitions.size()));
+    for (const auto& rv : fev.reverb_definitions) {
+        write_reverb_definition(w, rv);
+    }
+
+    write_music_data_items(w, fev.music_data.items);
+}
+
+// ---------------------------------------------------------------------------
+// FEV1 (flat) writer
+// ---------------------------------------------------------------------------
+
+std::vector<uint8_t> fev_write_fev1(const FevFile& fev) {
     BinaryWriter w;
+    FevWriteContext ctx; // riff = false
 
     w.write_u32(FEV1_MAGIC);
     w.write_u32(fev.version);
@@ -555,37 +656,167 @@ std::vector<uint8_t> fev_write(const FevFile& fev) {
         write_fev_string(w, bank.name);
     }
 
-    // Root event category (recursive)
-    write_event_category(w, fev.root_category);
-
-    // Event groups
-    w.write_u32(static_cast<uint32_t>(fev.event_groups.size()));
-    for (const auto& grp : fev.event_groups) {
-        write_event_group(w, grp);
-    }
-
-    // Sound definition configs
-    w.write_u32(static_cast<uint32_t>(fev.sound_definition_configs.size()));
-    for (const auto& cfg : fev.sound_definition_configs) {
-        write_sound_definition_config(w, cfg);
-    }
-
-    // Sound definitions
-    w.write_u32(static_cast<uint32_t>(fev.sound_definitions.size()));
-    for (const auto& sd : fev.sound_definitions) {
-        write_sound_definition(w, sd);
-    }
-
-    // Reverb definitions
-    w.write_u32(static_cast<uint32_t>(fev.reverb_definitions.size()));
-    for (const auto& rv : fev.reverb_definitions) {
-        write_reverb_definition(w, rv);
-    }
-
-    // Music data (to end of file)
-    write_music_data_items(w, fev.music_data.items);
-
+    write_fev_body_tail(w, fev, ctx);
     return std::move(w.data());
+}
+
+// ---------------------------------------------------------------------------
+// RIFF (FMOD Designer 4.45) writer
+// ---------------------------------------------------------------------------
+
+// Emit a RIFF/LIST chunk header word-aligning the payload: id(4), size(4),
+// then the caller's payload; a trailing pad byte is added for odd sizes. Returns
+// nothing — chunks are appended in-place.
+void write_riff_chunk(BinaryWriter& w, const std::string& id,
+                      const std::vector<uint8_t>& payload) {
+    w.write_bytes(reinterpret_cast<const uint8_t*>(id.data()), 4);
+    w.write_u32(static_cast<uint32_t>(payload.size()));
+    w.write_bytes(payload.data(), payload.size());
+    if (payload.size() % 2) w.write_u8(0); // word alignment
+}
+
+// Build the LGCY chunk payload from the model (RIFF mode). Also fills ctx.eprp
+// with every envelope point in traversal order for the EPRP chunk.
+std::vector<uint8_t> build_lgcy_payload(const FevFile& fev, FevWriteContext& ctx) {
+    BinaryWriter w;
+
+    // Pool sizes (LGCY has no FEV1 magic/version/manifest — those live in FMT and
+    // OBCT — but keeps the two pool-size words).
+    w.write_u32(fev.sound_def_names_pool_size);
+    w.write_u32(fev.waveform_names_pool_size);
+
+    // LGCY repeats the project name inline (mirrors the FEV1 layout); PROP holds
+    // the authoritative copy but the inline one is part of the byte stream.
+    write_fev_string(w, fev.project_name);
+
+    // Banks with per-language checksum arrays.
+    uint32_t lang_count = fev.riff.lang_count;
+    w.write_u32(static_cast<uint32_t>(fev.banks.size()));
+    if (!fev.banks.empty()) {
+        // lang_count word is only present when there is at least one bank
+        // (matches the reader: it is read only if bank_count > 0).
+        w.write_u32(lang_count);
+    }
+    for (const auto& bank : fev.banks) {
+        w.write_u32(static_cast<uint32_t>(bank.load_mode));
+        w.write_s32(bank.max_streams);
+        for (uint32_t lc = 0; lc < lang_count; ++lc) {
+            if (lc < bank.lang_checksums.size()) {
+                const auto& ck = bank.lang_checksums[lc];
+                w.write_u32(ck.ck0);
+                w.write_u32(ck.ck1);
+                w.write_u32(ck.unk);
+            } else {
+                // Defensive: a hand-built bank without a full array falls back to
+                // fsb_checksum for language 0 and zeros elsewhere.
+                w.write_u32(lc == 0 ? bank.fsb_checksum[0] : 0);
+                w.write_u32(lc == 0 ? bank.fsb_checksum[1] : 0);
+                w.write_u32(0);
+            }
+        }
+        write_fev_string(w, bank.name);
+    }
+
+    write_fev_body_tail(w, fev, ctx);
+    return std::move(w.data());
+}
+
+// Build the EPRP chunk payload: count(u32) + count × (position, value, curve).
+std::vector<uint8_t> build_eprp_payload(const FevWriteContext& ctx) {
+    BinaryWriter w;
+    w.write_u32(static_cast<uint32_t>(ctx.eprp.size()));
+    for (const FevEffectEnvelopePoint* pt : ctx.eprp) {
+        w.write_u32(pt->position);
+        w.write_f32(pt->value);
+        w.write_u32(static_cast<uint32_t>(pt->curve_shape));
+    }
+    return std::move(w.data());
+}
+
+// Build the OBCT chunk payload: manifest count + (type,value) pairs.
+std::vector<uint8_t> build_obct_payload(const FevFile& fev) {
+    BinaryWriter w;
+    w.write_u32(static_cast<uint32_t>(fev.manifest.size()));
+    for (const auto& entry : fev.manifest) {
+        w.write_u32(static_cast<uint32_t>(entry.type));
+        w.write_u32(entry.value);
+    }
+    return std::move(w.data());
+}
+
+// Build the PROP chunk payload: the project name as a u32-prefixed string.
+std::vector<uint8_t> build_prop_payload(const FevFile& fev) {
+    BinaryWriter w;
+    write_fev_string(w, fev.project_name);
+    return std::move(w.data());
+}
+
+// Build the STRR chunk payload verbatim from preserved data: count(u32) +
+// offsets[count](u32) + pool bytes. Reproducing the exact table keeps every u32
+// index used in LGCY pointing at the same slot it came from.
+std::vector<uint8_t> build_strr_payload(const FevFile& fev) {
+    BinaryWriter w;
+    w.write_u32(static_cast<uint32_t>(fev.riff.strr_offsets.size()));
+    for (uint32_t off : fev.riff.strr_offsets) w.write_u32(off);
+    w.write_bytes(fev.riff.strr_pool.data(), fev.riff.strr_pool.size());
+    return std::move(w.data());
+}
+
+std::vector<uint8_t> fev_write_riff(const FevFile& fev) {
+    FevWriteContext ctx;
+    ctx.riff = true;
+
+    // LGCY and EPRP: emit the preserved raw bytes when the file came from a real
+    // RIFF parse (guarantees byte-perfect round-trip through any version-gated
+    // field). Fall back to re-serializing from the model for hand-built FevFiles
+    // (unit tests) that carry no preserved bytes. build_lgcy_payload also
+    // populates ctx.eprp, so call it unconditionally to keep the fallback EPRP
+    // consistent even though its output may be discarded.
+    std::vector<uint8_t> lgcy_model = build_lgcy_payload(fev, ctx);
+    std::vector<uint8_t> eprp_model = build_eprp_payload(ctx);
+    std::vector<uint8_t> lgcy = fev.riff.lgcy_bytes.empty() ? std::move(lgcy_model)
+                                                            : fev.riff.lgcy_bytes;
+    std::vector<uint8_t> eprp = fev.riff.eprp_bytes.empty() ? std::move(eprp_model)
+                                                            : fev.riff.eprp_bytes;
+    std::vector<uint8_t> obct = build_obct_payload(fev);
+    std::vector<uint8_t> prop = build_prop_payload(fev);
+    std::vector<uint8_t> strr = build_strr_payload(fev);
+
+    // Assemble the LIST "PROJ" body in the recorded chunk order.
+    BinaryWriter proj;
+    proj.write_bytes(reinterpret_cast<const uint8_t*>("PROJ"), 4);
+    for (const std::string& id : fev.riff.chunk_order) {
+        if (id == "OBCT") write_riff_chunk(proj, id, obct);
+        else if (id == "PROP") write_riff_chunk(proj, id, prop);
+        else if (id == "LGCY") write_riff_chunk(proj, id, lgcy);
+        else if (id == "EPRP") write_riff_chunk(proj, id, eprp);
+        else if (id == "STRR") write_riff_chunk(proj, id, strr);
+        else if (id == "LANG") write_riff_chunk(proj, id, fev.riff.lang_bytes);
+        else {
+            // Preserved unknown chunk.
+            for (const auto& xc : fev.riff.extra_chunks) {
+                if (xc.id == id) { write_riff_chunk(proj, id, xc.payload); break; }
+            }
+        }
+    }
+
+    // Wrap PROJ in a LIST chunk, then FMT + LIST in the top-level RIFF "FEV ".
+    BinaryWriter riff_body;
+    write_riff_chunk(riff_body, "FMT ", fev.riff.fmt_bytes);
+    write_riff_chunk(riff_body, "LIST", proj.data());
+
+    BinaryWriter out;
+    out.write_bytes(reinterpret_cast<const uint8_t*>("RIFF"), 4);
+    out.write_u32(static_cast<uint32_t>(riff_body.data().size() + 4)); // + "FEV " form
+    out.write_bytes(reinterpret_cast<const uint8_t*>("FEV "), 4);
+    out.write_bytes(riff_body.data().data(), riff_body.data().size());
+    return std::move(out.data());
+}
+
+} // namespace
+
+std::vector<uint8_t> fev_write(const FevFile& fev) {
+    return fev.is_riff ? fev_write_riff(fev) : fev_write_fev1(fev);
 }
 
 } // namespace lu::assets

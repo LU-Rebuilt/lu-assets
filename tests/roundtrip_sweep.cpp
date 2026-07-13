@@ -8,7 +8,7 @@
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
 // (brick geometry), .hkx (binary packfile AND tagged binary — XML HKX is skipped, not
 // round-tripped: zero real client files use it), .fsb (FMOD sound bank, full
-// decrypt+parse+write+encrypt path), .fev (FMOD event project, FEV1 variant), and
+// decrypt+parse+write+encrypt path), .fev (FMOD event project, FEV1 and RIFF variants), and
 // ForkParticle effect scripts (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
@@ -562,9 +562,11 @@ int main(int argc, char* argv[]) {
         {".g", {&brick_geom_rt, {}}},
         {".g1", {&brick_geom_rt, {}}},
         {".g2", {&brick_geom_rt, {}}},
-        // FEV1 sound-event projects. The RIFF-wrapped FEV variant (no real client
-        // files) has a different magic and would be skipped as mis-extensioned.
-        {".fev", {&fev_rt, {"FEV1"}}},
+        // FMOD event projects: both the flat FEV1 variant and the RIFF-wrapped
+        // variant (FMOD Designer 4.45) round-trip through the same fev_parse/
+        // fev_write dispatch. Accept both magics so RIFF .fev files aren't skipped
+        // as mis-extensioned.
+        {".fev", {&fev_rt, {"FEV1", "RIFF"}}},
     };
 
     std::map<std::string, FormatStats> stats;
