@@ -19,7 +19,7 @@ Phased effort.
 | 1 | NIF → USD (mesh, materials, textures, vertex colors) | **done** |
 | 2 | USD → NIF import (client-accepts fidelity bar) | **done** |
 | 3a | KF animation → UsdSkel | **done** |
-| 3b | HKX collision → USD | planned |
+| 3b | HKX collision → USD | **done** |
 | 4 | CDClient object composition (gather a LOT's NIF + textures + anims + physics into one stage, and back) | planned |
 
 ## `nif_to_usd`
@@ -118,6 +118,24 @@ the paired model (composed together in the CDClient object phase).
 Multiple clips land in one stage (all `SkelAnimation`s under one skeleton), so a
 model's whole animation set exports to a single container. Verified on the
 client corpus: 120/120 sampled KF files export and validate under `usdchecker`.
+
+## `hkx_to_usd`
+
+`hkx_to_usd(hkx_path, out_path, source_name, options)` exports an HKX file's
+collision shapes to `UsdGeomMesh` prims under a `/collision` scope, authored
+with `purpose = "guide"` so DCC tools treat them as collision helpers rather
+than render geometry. The original Havok shape class is preserved as a
+`lu:hkxShapeType` attribute.
+
+Geometry comes from the shared `Hkx::extractGeometry` pipeline (which resolves
+rigid-body + scene-node transforms to world space). As part of this phase that
+extractor gained convex-hull tessellation: `hkpConvexVerticesShape` stores its
+vertices SIMD-transposed with no faces, so the hull is computed with an
+incremental 3D convex hull — this is the dominant LU collision shape, so it
+lifts coverage from ~94% (Mopp/scene-mesh only) to ~99% of corpus files.
+
+Verified on the client corpus: 148/151 sampled HKX files export collision
+geometry, all `usdchecker`-valid (the remainder have no tessellable shape).
 
 ## OpenUSD resolution
 

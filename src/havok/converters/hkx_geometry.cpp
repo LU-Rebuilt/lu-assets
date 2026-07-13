@@ -9,7 +9,10 @@
 #include <string>
 #include <array>
 #include <cmath>
+#include <map>
 #include <set>
+#include <utility>
+#include <vector>
 
 namespace Hkx {
 
@@ -74,6 +77,97 @@ static void tessellateBox(ExtractedMesh& m, const Transform& xform, const Vector
     }
 }
 
+// Build a convex-hull triangle mesh from a set of points. hkpConvexVerticesShape
+// stores its vertices SIMD-transposed (FourTransposedPoints: xs/ys/zs each hold
+// four vertices' components) and does not store faces, so we compute the hull.
+// Uses an incremental hull with a face-visibility test — the point count for LU
+// collision hulls is small (tens), so an O(n^2) build is fine and avoids pulling
+// in a geometry dependency.
+static void tessellateConvexHull(ExtractedMesh& m, const Transform& xform,
+                                 const std::vector<FourTransposedPoints>& transposed,
+                                 int numVertices) {
+    struct P { double x, y, z; };
+    std::vector<P> pts;
+    pts.reserve(static_cast<size_t>(numVertices));
+    for (const auto& ftp : transposed) {
+        const float xs[4] = {ftp.xs.x, ftp.xs.y, ftp.xs.z, ftp.xs.w};
+        const float ys[4] = {ftp.ys.x, ftp.ys.y, ftp.ys.z, ftp.ys.w};
+        const float zs[4] = {ftp.zs.x, ftp.zs.y, ftp.zs.z, ftp.zs.w};
+        for (int i = 0; i < 4 && static_cast<int>(pts.size()) < numVertices; ++i) {
+            pts.push_back({xs[i], ys[i], zs[i]});
+        }
+    }
+    if (pts.size() < 4) return;
+
+    auto sub = [](const P& a, const P& b) { return P{a.x - b.x, a.y - b.y, a.z - b.z}; };
+    auto cross = [](const P& a, const P& b) {
+        return P{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+    };
+    auto dot = [](const P& a, const P& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+
+    struct Face { int a, b, c; P n; };
+    std::vector<Face> faces;
+    auto makeFace = [&](int a, int b, int c, const P& interior) {
+        P n = cross(sub(pts[b], pts[a]), sub(pts[c], pts[a]));
+        // Orient the normal to point away from the interior point.
+        if (dot(n, sub(interior, pts[a])) > 0) { std::swap(b, c); n = P{-n.x, -n.y, -n.z}; }
+        faces.push_back({a, b, c, n});
+    };
+
+    // Seed tetrahedron from the first four non-coplanar points.
+    int i0 = 0, i1 = 1, i2 = 2, i3 = -1;
+    P n012 = cross(sub(pts[i1], pts[i0]), sub(pts[i2], pts[i0]));
+    for (int i = 3; i < static_cast<int>(pts.size()); ++i) {
+        if (std::abs(dot(n012, sub(pts[i], pts[i0]))) > 1e-6) { i3 = i; break; }
+    }
+    if (i3 < 0) return; // all points coplanar — no volume to hull
+    P centroid{
+        (pts[i0].x + pts[i1].x + pts[i2].x + pts[i3].x) / 4,
+        (pts[i0].y + pts[i1].y + pts[i2].y + pts[i3].y) / 4,
+        (pts[i0].z + pts[i1].z + pts[i2].z + pts[i3].z) / 4};
+    makeFace(i0, i1, i2, centroid);
+    makeFace(i0, i1, i3, centroid);
+    makeFace(i0, i2, i3, centroid);
+    makeFace(i1, i2, i3, centroid);
+
+    // Incrementally add each remaining point: remove faces it can "see", then
+    // stitch new faces from the horizon edges to the point.
+    for (int p = 0; p < static_cast<int>(pts.size()); ++p) {
+        std::vector<Face> visible, hidden;
+        for (const auto& f : faces) {
+            if (dot(f.n, sub(pts[p], pts[f.a])) > 1e-9) visible.push_back(f);
+            else hidden.push_back(f);
+        }
+        if (visible.empty()) continue;
+
+        // Horizon = edges shared by exactly one visible face.
+        std::map<std::pair<int, int>, int> edgeCount;
+        auto addEdge = [&](int a, int b) {
+            edgeCount[{std::min(a, b), std::max(a, b)}]++;
+        };
+        for (const auto& f : visible) { addEdge(f.a, f.b); addEdge(f.b, f.c); addEdge(f.c, f.a); }
+
+        faces = hidden;
+        for (const auto& f : visible) {
+            int e[3][2] = {{f.a, f.b}, {f.b, f.c}, {f.c, f.a}};
+            for (auto& ed : e) {
+                if (edgeCount[{std::min(ed[0], ed[1]), std::max(ed[0], ed[1])}] == 1) {
+                    makeFace(ed[0], ed[1], p, centroid);
+                }
+            }
+        }
+    }
+
+    // Emit the hull faces as a mesh.
+    for (const auto& f : faces) {
+        uint32_t base = static_cast<uint32_t>(m.vertices.size() / 3);
+        addVertex(m, xform, static_cast<float>(pts[f.a].x), static_cast<float>(pts[f.a].y), static_cast<float>(pts[f.a].z));
+        addVertex(m, xform, static_cast<float>(pts[f.b].x), static_cast<float>(pts[f.b].y), static_cast<float>(pts[f.b].z));
+        addVertex(m, xform, static_cast<float>(pts[f.c].x), static_cast<float>(pts[f.c].y), static_cast<float>(pts[f.c].z));
+        m.indices.push_back(base); m.indices.push_back(base + 1); m.indices.push_back(base + 2);
+    }
+}
+
 static void extractShape(std::vector<ExtractedMesh>& out, int& shapeCount,
                           const ShapeInfo& shape, const Transform& parentXform) {
     if (shape.type == ShapeType::Unknown) return;
@@ -84,6 +178,14 @@ static void extractShape(std::vector<ExtractedMesh>& out, int& shapeCount,
         ExtractedMesh m;
         m.shapeType = ShapeType::Box;
         tessellateBox(m, parentXform, shape.halfExtents);
+        if (!m.indices.empty()) out.push_back(std::move(m));
+    }
+
+    // Convex-vertices hull: compute the hull from the stored (transposed) points.
+    if (shape.type == ShapeType::ConvexVertices && !shape.rotatedVertices.empty()) {
+        ExtractedMesh m;
+        m.shapeType = ShapeType::ConvexVertices;
+        tessellateConvexHull(m, parentXform, shape.rotatedVertices, shape.numVertices);
         if (!m.indices.empty()) out.push_back(std::move(m));
     }
 
