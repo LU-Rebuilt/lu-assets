@@ -8,6 +8,11 @@ add_subdirectory(fmod)
 add_subdirectory(forkparticle)
 add_subdirectory(scaleform)
 
+# USD translation tests are only built when the optional USD layer is.
+if(LU_ASSETS_BUILD_USD)
+    add_subdirectory(usd)
+endif()
+
 # Full client asset test (bulk parsing of all asset types)
 add_executable(full_client_test full_client_test.cpp)
 target_link_libraries(full_client_test PRIVATE lu_assets)

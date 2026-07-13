@@ -13,6 +13,9 @@
 # transitive find_dependency inside pxrConfig.cmake resolves. Harmless when USD
 # is built from source (X11 simply may or may not be found).
 find_package(X11 QUIET)
+# OpenSubdiv's imported targets (pulled in transitively by pxr) list
+# Threads::Threads in their link interface; provide it so those targets resolve.
+find_package(Threads QUIET)
 
 find_package(pxr QUIET)
 
@@ -43,6 +46,18 @@ if(pxr_FOUND)
         if(NOT TARGET ${_target})
             return()
         endif()
+        # Only imported targets carry the leaked absolute/SONAME deps and can be
+        # safely rewritten. Skip alias targets (get_target_property on an ALIAS
+        # errors) and non-imported first-party targets.
+        get_target_property(_aliased ${_target} ALIASED_TARGET)
+        if(_aliased)
+            return()
+        endif()
+        get_target_property(_imported ${_target} IMPORTED)
+        if(NOT _imported)
+            return()
+        endif()
+
         list(FIND ${_seen_var} ${_target} _idx)
         if(NOT _idx EQUAL -1)
             return()
@@ -50,7 +65,6 @@ if(pxr_FOUND)
         list(APPEND ${_seen_var} ${_target})
         set(${_seen_var} "${${_seen_var}}" PARENT_SCOPE)
 
-        get_target_property(_imported ${_target} IMPORTED)
         get_target_property(_libs ${_target} INTERFACE_LINK_LIBRARIES)
         if(_libs)
             set(_kept)
@@ -69,16 +83,15 @@ if(pxr_FOUND)
                 else()
                     list(APPEND _kept "${_lib}")
                     # Recurse into imported target dependencies to reach nested
-                    # offenders (e.g. Alembic -> hdf5-shared).
+                    # offenders (e.g. Alembic -> hdf5-shared). Non-target entries
+                    # (raw paths, -l flags) are handled in place above.
                     if(TARGET ${_lib})
                         _lu_scrub_target(${_lib} ${_seen_var})
                         set(${_seen_var} "${${_seen_var}}" PARENT_SCOPE)
                     endif()
                 endif()
             endforeach()
-            if(_imported)
-                set_target_properties(${_target} PROPERTIES INTERFACE_LINK_LIBRARIES "${_kept}")
-            endif()
+            set_target_properties(${_target} PROPERTIES INTERFACE_LINK_LIBRARIES "${_kept}")
         endif()
     endfunction()
     set(_lu_scrub_seen)
@@ -110,6 +123,7 @@ endif()
 
 add_library(lu_assets_usd
     ${CMAKE_CURRENT_SOURCE_DIR}/nif_to_usd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/usd_to_nif.cpp
 )
 # src/ (parent of src/usd) as the include root so headers resolve as
 # "usd/nif_to_usd.h", matching how the core library's own headers are included

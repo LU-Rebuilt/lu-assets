@@ -12,13 +12,14 @@ consumers of the core `lu_assets` library don't need. It builds as a separate
 
 ## Status
 
-Phased effort. Current phase: **NIF → USD export**.
+Phased effort.
 
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | NIF → USD (mesh, materials, textures, vertex colors) | **done** |
-| 2 | USD → NIF import (client-accepts fidelity bar) | planned |
+| 2 | USD → NIF import (client-accepts fidelity bar) | **done** |
 | 3 | KF/ETK animation (UsdSkel) + HKX collision | planned |
+| 4 | CDClient object composition (gather a LOT's NIF + textures + anims + physics into one stage, and back) | planned |
 
 ## `nif_to_usd`
 
@@ -51,6 +52,41 @@ the root so the model reads correctly in Y-up-defaulting tools.
 Output validates clean under `usdchecker` (the only diagnostic is an expected
 unresolved-texture warning when the referenced `.dds` isn't co-located with the
 stage).
+
+## `usd_to_nif`
+
+`usd_to_nif(usd_path, options)` reads a USD stage and returns a `NifFile` (write
+it with `nif_write`). The inverse of `nif_to_usd`, with a **semantic** fidelity
+bar — a valid NIF the client loads and draws the same, not byte-identity (USD
+does not carry Gamebryo's exact block layout or optional fields).
+
+It walks every `UsdGeomMesh`, resolving each prim's world transform, and hand-
+builds a minimal valid NIF for version 20.3.0.9:
+
+```
+NiNode "Scene Root"
+  └─ per mesh: NiTriShape → NiTriShapeData
+               NiMaterialProperty
+               [NiTexturingProperty → NiSourceTexture]   (when textured)
+```
+
+Per mesh it imports positions, per-vertex normals, the `st` UV set (undoing the
+export V-flip), and vertex colors; the bound `UsdPreviewSurface`'s constant
+inputs become the `NiMaterialProperty` colors, and a connected `UsdUVTexture`'s
+file path becomes a `NiSourceTexture`. Per-mesh transforms are baked into
+vertices, so the flat scene uses identity node transforms. A Y-up stage is
+rotated back to NIF's Z-up.
+
+The hand-emitted block byte layouts match how the reader (verified against
+`nif.xml`) parses each block at 20.3.0.9 — notably: `NiProperty::Flags` is
+**absent** on `NiMaterialProperty` at this version (present only ≤ 10.0.0.0),
+and `NiTexturingProperty` ends with an unconditional `Num Shader Textures` u32
+after the (absent-here) decal slots.
+
+Not yet imported: skeletons/skinning, animation, collision, LOD nodes, and
+multi-level hierarchy (a flat root-node scene is emitted). Round-trip verified
+on the client corpus: geometry (vertex/triangle counts, positions, UVs),
+material colours and texture paths survive NIF → USD → NIF.
 
 ## OpenUSD resolution
 
