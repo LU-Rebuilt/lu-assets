@@ -1262,6 +1262,18 @@ NifFile nif_parse(std::span<const uint8_t> data) {
 
     size_t pos = find_header_end(data);
     nif.header_line.assign(reinterpret_cast<const char*>(data.data()), pos);
+
+    // Validate the magic before reading any binary. A NIF's first line is always
+    // a "<...> File Format, Version X.X.X.X" banner (NetImmerse originally,
+    // Gamebryo after the rename). Without this check, non-NIF input that merely
+    // contains an early newline within the first 256 bytes — notably the LXFML
+    // XML brick-model files stored under a .nif extension in res/BrickModels/,
+    // whose "<?xml ...?>\r\n" satisfies find_header_end — would parse its XML as
+    // a binary header and fail much later with a confusing, misleading error
+    // (e.g. "block type name too long"). Reject it clearly and up front instead.
+    if (nif.header_line.find("File Format") == std::string::npos) {
+        throw NifError("NIF: not a NIF file (missing 'File Format' header banner)");
+    }
     BinaryReader r(data);
     r.seek(pos);
 
