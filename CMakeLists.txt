@@ -20,6 +20,14 @@ endif()
 
 option(LU_ASSETS_BUILD_TESTS "Build unit tests" ${LU_ASSETS_IS_TOP_LEVEL})
 
+# USD translation layer (nif/kf/kfm/etk/hkx <-> Universal Scene Description).
+# Off by default: it pulls in OpenUSD, a very large dependency that most
+# consumers of the core asset library don't need. Only tools that actually
+# convert to/from USD (e.g. model-tools' nif2usd CLI) turn this on. When on,
+# it builds a SEPARATE lu_assets_usd target so the core lu_assets library
+# stays free of any OpenUSD dependency.
+option(LU_ASSETS_BUILD_USD "Build the USD translation layer (requires OpenUSD)" OFF)
+
 # FetchContent for dependencies
 include(FetchContent)
 
@@ -88,6 +96,11 @@ add_subdirectory(src)
 
 # Alias target for FetchContent consumers
 add_library(lu_assets::lu_assets ALIAS lu_assets)
+
+# Optional USD translation layer (separate target; see LU_ASSETS_BUILD_USD above).
+if(LU_ASSETS_BUILD_USD)
+    add_subdirectory(src/usd)
+endif()
 
 # Tests
 if(LU_ASSETS_BUILD_TESTS)
