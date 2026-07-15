@@ -372,11 +372,13 @@ int author_kf_clips_shared(const UsdStagePtr& stage, const SdfPath& root_path,
                            const NifFile& kf,
                            const std::vector<std::string>& joint_paths,
                            const std::map<std::string, int>& joint_lookup,
-                           double tcps, double& min_t, double& max_t) {
+                           double tcps, double& min_t, double& max_t,
+                           int max_clips) {
     if (kf.sequences.empty()) return 0;
     AnimIndex idx(kf);
     int authored = 0;
     for (const auto& seq : kf.sequences) {
+        if (max_clips > 0 && authored >= max_clips) break;
         author_clip(stage, root_path, seq, idx, joint_paths, joint_lookup, tcps);
         min_t = std::min(min_t, static_cast<double>(seq.start_time));
         max_t = std::max(max_t, static_cast<double>(seq.stop_time));

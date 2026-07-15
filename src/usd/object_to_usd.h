@@ -50,6 +50,11 @@ struct ObjectToUsdOptions {
     double time_codes_per_second = 30.0;
     bool include_collision = true;
     bool include_animation = true;
+    // Cap the number of animation clips composed into the stage. An object like
+    // the player minifig has ~1100 clips; that many SkelAnimations in one file
+    // can overwhelm an interactive DCC session (Blender's viewport), even though
+    // the file itself is valid. 0 = no limit.
+    int max_animations = 0;
 };
 
 // Compose from a KFM manifest. kfm_path is a client-relative path resolved via

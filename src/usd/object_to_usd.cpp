@@ -440,14 +440,22 @@ void compose(const std::string& out_path,
     size_t seq_cursor = 0;
     UsdSkelBindingAPI skel_binding;
     bool bound_default = false;
+    int total_authored = 0;
     if (options.include_animation && !joint_names.empty()) {
         for (size_t fi = 0; fi < kf_files.size(); ++fi) {
             const AnimFile& af = kf_files[fi];
             const NifFile& kf = parsed_kfs[fi];
             if (kf.sequences.empty()) { continue; }
 
-            author_kf_clips_shared(stage, root, kf, joint_paths, joint_lookup,
-                                   options.time_codes_per_second, min_t, max_t);
+            // Respect the overall animation cap (a minifig has ~1100 clips, which
+            // can overwhelm an interactive DCC viewport). 0 = unlimited.
+            int budget = options.max_animations > 0
+                ? options.max_animations - total_authored : 0;
+            if (options.max_animations > 0 && budget <= 0) break;
+
+            int n = author_kf_clips_shared(stage, root, kf, joint_paths, joint_lookup,
+                                           options.time_codes_per_second, min_t, max_t,
+                                           budget);
 
             std::optional<NifFile> etk;
             if (af.etk_bytes) {
@@ -456,7 +464,10 @@ void compose(const std::string& out_path,
                                                              af.etk_bytes->size()));
                 } catch (const std::exception&) {}
             }
+            // Only the first n sequences of this file were authored.
+            int emitted = 0;
             for (const auto& seq : kf.sequences) {
+                if (emitted >= n) break;
                 const SdfPath anim_path =
                     root.AppendChild(TfToken("anim_" + sanitize(seq.name, "clip")));
                 if (seq_cursor < kfm_seqs.size() && kfm_seqs[seq_cursor]) {
@@ -470,7 +481,9 @@ void compose(const std::string& out_path,
                     bound_default = true;
                 }
                 ++seq_cursor;
+                ++emitted;
             }
+            total_authored += n;
         }
         if (min_t <= max_t) {
             stage->SetStartTimeCode(min_t * options.time_codes_per_second);

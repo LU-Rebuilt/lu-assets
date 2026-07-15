@@ -70,13 +70,15 @@ void author_skeleton_hierarchical(const PXR_NS::UsdStagePtr& stage,
                                   const std::vector<PXR_NS::GfMatrix4d>& local_bind);
 
 // Author only a KF's clips (no skeleton) against a pre-built shared skeleton.
-// Accumulates the clip time range (seconds) into min_t/max_t.
+// Accumulates the clip time range (seconds) into min_t/max_t. max_clips caps how
+// many clips from this file are authored (0 = no limit). Returns clips authored.
 int author_kf_clips_shared(const PXR_NS::UsdStagePtr& stage,
                            const PXR_NS::SdfPath& parent_path,
                            const NifFile& kf,
                            const std::vector<std::string>& joint_paths,
                            const std::map<std::string, int>& joint_lookup,
-                           double tcps, double& min_t, double& max_t);
+                           double tcps, double& min_t, double& max_t,
+                           int max_clips = 0);
 
 // Author an HKX file's collision meshes under parent_path. Declared in
 // hkx_to_usd.cpp. Returns the mesh count.
