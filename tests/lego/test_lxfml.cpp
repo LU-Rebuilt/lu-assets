@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "lego/lxfml/lxfml_reader.h"
+#include "lego/lxfml/lxfml_writer.h"
+#include "lego/lxfml/lxfml_convert.h"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -378,4 +381,76 @@ TEST(LXFML, FormatDetection) {
 </LXFML>)";
     auto lxfml_scene = lxfml_parse(to_bytes(scene_xml));
     EXPECT_EQ(lxfml_scene.format, LxfmlFormat::Scene);
+}
+
+// ── Upconversion to v5 ──────────────────────────────────────────────────────
+
+TEST(LXFML, UpconvertSceneToV5) {
+    // A v4 Scene: one Group-placed Part with an angle-axis transform.
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML versionMajor="4" versionMinor="0">
+  <Scene cameraRefID="0">
+    <Model name="Duck">
+      <Group refID="0" angle="0" ax="0" ay="1" az="0" tx="0" ty="0" tz="0">
+        <Part refID="0" designID="3676" materialID="24"
+              angle="90" ax="0" ay="1" az="0" tx="0" ty="-0.96" tz="0"/>
+      </Group>
+    </Model>
+  </Scene>
+</LXFML>)";
+    auto src = lxfml_parse(to_bytes(xml));
+    ASSERT_EQ(src.format, LxfmlFormat::Scene);
+    ASSERT_EQ(src.bricks.size(), 1u); // parser flattens Scene into the unified bricks
+
+    auto v5 = lxfml_upconvert_to_v5(src);
+    EXPECT_EQ(v5.format, LxfmlFormat::Bricks);
+    EXPECT_EQ(v5.version_major, 5);
+    EXPECT_EQ(v5.version_minor, 0);
+    ASSERT_EQ(v5.bricks.size(), 1u);
+    EXPECT_EQ(v5.bricks[0].design_id, 3676);
+    ASSERT_EQ(v5.bricks[0].parts.size(), 1u);
+    EXPECT_EQ(v5.bricks[0].parts[0].materials, "24"); // materialID int -> materials string
+
+    // The v5 Bone matrix must exactly match the flattened source transform.
+    ASSERT_EQ(v5.bricks[0].parts[0].bones.size(), 1u);
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_FLOAT_EQ(v5.bricks[0].parts[0].bones[0].transform[i],
+                        src.bricks[0].parts[0].bones[0].transform[i]);
+    }
+
+    // The converted file must serialize to valid, re-parseable, self-consistent v5.
+    auto out = lxfml_write(v5);
+    std::vector<uint8_t> out_bytes(out.begin(), out.end());
+    auto reparsed = lxfml_parse(out_bytes);
+    EXPECT_EQ(reparsed.format, LxfmlFormat::Bricks);
+    EXPECT_EQ(reparsed.version_major, 5);
+    ASSERT_EQ(reparsed.bricks.size(), 1u);
+    EXPECT_EQ(reparsed.bricks[0].design_id, 3676);
+    // And it must round-trip byte-perfectly (proves it's well-formed v5).
+    auto out2 = lxfml_write(reparsed);
+    EXPECT_EQ(std::vector<uint8_t>(out2.begin(), out2.end()), out_bytes);
+}
+
+TEST(LXFML, UpconvertBricksIsIdentityGeometry) {
+    // Upconverting an already-v5 Bricks file keeps its bricks unchanged.
+    auto src = lxfml_parse(to_bytes(MINIMAL_LXFML));
+    ASSERT_EQ(src.format, LxfmlFormat::Bricks);
+    auto v5 = lxfml_upconvert_to_v5(src);
+    EXPECT_EQ(v5.format, LxfmlFormat::Bricks);
+    EXPECT_EQ(v5.version_major, 5);
+    ASSERT_EQ(v5.bricks.size(), src.bricks.size());
+    for (size_t i = 0; i < src.bricks.size(); ++i) {
+        EXPECT_EQ(v5.bricks[i].design_id, src.bricks[i].design_id);
+    }
+}
+
+TEST(LXFML, UpconvertRejectsFormatNone) {
+    // A meta-only file with no placement element cannot be upconverted.
+    const char* xml = R"(<?xml version="1.0"?>
+<LXFML versionMajor="5" versionMinor="0">
+  <Meta><Brand name="LEGOUniverse"/></Meta>
+</LXFML>)";
+    auto src = lxfml_parse(to_bytes(xml));
+    ASSERT_EQ(src.format, LxfmlFormat::None);
+    EXPECT_THROW(lxfml_upconvert_to_v5(src), LxfmlError);
 }

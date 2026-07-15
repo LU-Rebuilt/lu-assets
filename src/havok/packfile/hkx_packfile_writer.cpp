@@ -1,6 +1,8 @@
 #include "havok/packfile/hkx_packfile_writer.h"
 #include "common/binary_writer/binary_writer.h"
 
+#include <string>
+
 namespace lu::assets {
 
 namespace {

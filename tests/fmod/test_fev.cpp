@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "fmod/fev/fev_reader.h"
+#include "fmod/fev/fev_writer.h"
 
 #include <cstring>
 #include <vector>
@@ -1256,4 +1257,402 @@ TEST(FEV, MusicDataSettChunk) {
     auto& sett = std::get<FevMdSett>(nested[0].chunks[0].body);
     EXPECT_FLOAT_EQ(sett.volume, 0.8f);
     EXPECT_FLOAT_EQ(sett.reverb, 0.3f);
+}
+
+// ---------------------------------------------------------------------------
+// Writer / round-trip
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Build a minimal FEV whose strings use the REAL on-disk convention (length includes
+// a trailing NUL), so the writer reproduces it byte-for-byte. build_minimal_fev()
+// above writes strings without the NUL, which is fine for parse tests but not for a
+// byte-exact writer comparison.
+void write_real_string(FevBuilder& b, const std::string& s) {
+    if (s.empty()) { b.write_u32(0); return; }
+    b.write_u32(static_cast<uint32_t>(s.size() + 1));
+    b.write_bytes(s.data(), s.size());
+    b.write_u8(0);
+}
+
+std::vector<uint8_t> build_real_minimal_fev() {
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0xAABBCCDD);       // sound_def_names_pool_size
+    b.write_u32(0x11223344);       // waveform_names_pool_size
+    b.write_u32(1);                 // manifest count
+    b.write_u32(0x01); b.write_u32(1); // one manifest entry
+    write_real_string(b, "TestProject");
+    b.write_u32(1);                 // bank count
+    b.write_u32(0x00000100); b.write_s32(32); b.write_zeros(8);
+    write_real_string(b, "TestBank");
+    // Root category, no subcategories
+    write_real_string(b, "master");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);                 // 0 subcategories
+    b.write_u32(0);                 // 0 event groups
+    b.write_u32(0);                 // 0 sound def configs
+    b.write_u32(0);                 // 0 sound defs
+    b.write_u32(0);                 // 0 reverbs
+    // no music data
+    return b.data();
+}
+
+} // anonymous namespace
+
+TEST(FEV, WriteRoundTripsMinimalFile) {
+    auto data = build_real_minimal_fev();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsMusicDataContainers) {
+    // Reuse the sett-chunk music-data layout (no strings, so byte-exact) and confirm
+    // parse -> write reproduces it verbatim.
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);   // pool sizes
+    b.write_u32(0);                     // manifest
+    write_real_string(b, "");          // empty project name
+    b.write_u32(0);                     // banks
+    write_real_string(b, "root");      // root category name
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);                     // subcategories
+    b.write_u32(0);                     // event groups
+    b.write_u32(0); b.write_u32(0); b.write_u32(0); // configs/defs/reverbs
+
+    uint32_t sett_item_len = 4 + 4 + 4 + 4;   // len + "sett" + vol + rev
+    uint32_t outer_len = 4 + 4 + sett_item_len; // len + "comp" + sett item
+    b.write_u32(outer_len);
+    b.write_tag("comp");
+    b.write_u32(sett_item_len);
+    b.write_tag("sett");
+    b.write_f32(0.8f);
+    b.write_f32(0.3f);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsCondContainerWithCprm) {
+    // Regression: a "cond" chunk is a container wrapping a nested cprm item, not an
+    // empty leaf. Verify this exact nesting round-trips (it desynced the reader before).
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);
+    b.write_u32(0);
+    write_real_string(b, "");
+    b.write_u32(0);
+    write_real_string(b, "root");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0); b.write_u32(0); b.write_u32(0);
+
+    // cprm chunk body = condition_type(u16) + param_id(u32) + value_1(u32) + value_2(u32) = 14
+    uint32_t cprm_item_len = 4 + 4 + 14;        // len + "cprm" + body
+    uint32_t cond_item_len = 4 + 4 + cprm_item_len; // len + "cond" + nested cprm item
+    b.write_u32(cond_item_len);
+    b.write_tag("cond");
+    b.write_u32(cprm_item_len);
+    b.write_tag("cprm");
+    b.write_u16(0x0006);
+    b.write_u32(0x00020000);
+    b.write_u32(0x40399a9a);
+    b.write_u32(0x40466666);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FEV, WriteRoundTripsSmpmSampleMap) {
+    // Regression: "smpm" is a u32 count + count*(u32,u32,u32) sample-map entries, not a
+    // single u32. Verify a populated sample map round-trips.
+    FevBuilder b;
+    b.write_magic();
+    b.write_version();
+    b.write_u32(0); b.write_u32(0);
+    b.write_u32(0);
+    write_real_string(b, "");
+    b.write_u32(0);
+    write_real_string(b, "root");
+    b.write_f32(1.0f); b.write_f32(0.0f); b.write_s32(-1); b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0);
+    b.write_u32(0); b.write_u32(0); b.write_u32(0);
+
+    // smpm body = count(4) + 2 entries * 12 = 4 + 24 = 28
+    uint32_t smpm_item_len = 4 + 4 + 28;
+    b.write_u32(smpm_item_len);
+    b.write_tag("smpm");
+    b.write_u32(2);                     // count
+    b.write_u32(110); b.write_u32(0); b.write_u32(129);
+    b.write_u32(113); b.write_u32(1);  b.write_u32(41);
+
+    auto data = b.data();
+    auto fev = fev_parse(data);
+    ASSERT_EQ(fev.music_data.items.size(), 1u);
+    auto& smpm = std::get<FevMdSmpm>(fev.music_data.items[0].chunks[0].body);
+    ASSERT_EQ(smpm.entries.size(), 2u);
+    EXPECT_EQ(smpm.entries[0].a, 110u);
+    EXPECT_EQ(smpm.entries[1].c, 41u);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+// ---------------------------------------------------------------------------
+// RIFF-wrapped FEV (FMOD Designer 4.45)
+// ---------------------------------------------------------------------------
+//
+// The RIFF variant wraps the FEV structures in a RIFF/LIST/PROJ container with
+// STRR (string index table), EPRP (envelope point coords), LANG, OBCT and PROP
+// chunks alongside the LGCY body. These tests build a minimal RIFF FEV by hand
+// and confirm byte-exact round-trip plus STRR-index preservation.
+namespace {
+
+// Assemble a RIFF chunk (id + u32 size + payload, word-aligned) onto out.
+void append_riff_chunk(std::vector<uint8_t>& out, const char* id,
+                       const std::vector<uint8_t>& payload) {
+    out.insert(out.end(), id, id + 4);
+    uint32_t sz = static_cast<uint32_t>(payload.size());
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>((sz >> (8 * i)) & 0xFF));
+    out.insert(out.end(), payload.begin(), payload.end());
+    if (sz % 2) out.push_back(0); // word-alignment pad
+}
+
+void put_u32(std::vector<uint8_t>& v, uint32_t x) {
+    for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>((x >> (8 * i)) & 0xFF));
+}
+void put_f32(std::vector<uint8_t>& v, float f) {
+    uint32_t x; std::memcpy(&x, &f, 4); put_u32(v, x);
+}
+// u32-length-prefixed string with the on-disk convention (length includes NUL).
+void put_fev_string(std::vector<uint8_t>& v, const std::string& s) {
+    if (s.empty()) { put_u32(v, 0); return; }
+    put_u32(v, static_cast<uint32_t>(s.size() + 1));
+    v.insert(v.end(), s.begin(), s.end());
+    v.push_back(0);
+}
+
+// Build a minimal but structurally complete RIFF FEV:
+//   one bank, a "master" root category, one event group (STRR-indexed name)
+//   holding one complex event (STRR-indexed name) with a single layer carrying
+//   one effect envelope (2 points), plus the matching EPRP records. Exercises
+//   every RIFF-specific transform: STRR indices, per-language bank checksums,
+//   the +3 event-header extra words, and the 5+tail envelope layout.
+std::vector<uint8_t> build_minimal_riff_fev() {
+    // STRR pool: index 0 = "" , 1 = "Root", 2 = "Waterfall".
+    std::vector<std::string> strings = {"", "Root", "Waterfall"};
+    std::vector<uint8_t> pool;
+    std::vector<uint32_t> offsets;
+    for (const auto& s : strings) {
+        offsets.push_back(static_cast<uint32_t>(pool.size()));
+        pool.insert(pool.end(), s.begin(), s.end());
+        pool.push_back(0);
+    }
+    std::vector<uint8_t> strr;
+    put_u32(strr, static_cast<uint32_t>(offsets.size()));
+    for (uint32_t o : offsets) put_u32(strr, o);
+    strr.insert(strr.end(), pool.begin(), pool.end());
+
+    // LANG chunk: 1 language "default".
+    std::vector<uint8_t> lang;
+    put_u32(lang, 1);
+    put_fev_string(lang, "default");
+
+    // FMT chunk: the format/version word.
+    std::vector<uint8_t> fmt;
+    put_u32(fmt, 0x00450000);
+
+    // OBCT manifest: one entry.
+    std::vector<uint8_t> obct;
+    put_u32(obct, 1);
+    put_u32(obct, 0x01); put_u32(obct, 1);
+
+    // PROP: project name.
+    std::vector<uint8_t> prop;
+    put_fev_string(prop, "MiniRiff");
+
+    // Build LGCY body.
+    std::vector<uint8_t> lgcy;
+    put_u32(lgcy, 0);           // sound_def_names_pool_size
+    put_u32(lgcy, 0);           // waveform_names_pool_size
+    put_fev_string(lgcy, "MiniRiff"); // inline project name (LGCY repeats it)
+    // Banks: 1 bank, lang_count 1, per-lang (ck0,ck1,unk), name.
+    put_u32(lgcy, 1);           // bank_count
+    put_u32(lgcy, 1);           // lang_count
+    put_u32(lgcy, 0x00000100);  // load_mode
+    put_u32(lgcy, 32);          // max_streams (s32)
+    put_u32(lgcy, 0xAABBCCDD);  // ck0
+    put_u32(lgcy, 0x11223344);  // ck1
+    put_u32(lgcy, 0);           // unk
+    put_fev_string(lgcy, "MiniBank");
+    // Root category "master": vol,pitch,maxstr,maxpb,subcount.
+    put_fev_string(lgcy, "master");
+    put_f32(lgcy, 1.0f); put_f32(lgcy, 0.0f); put_u32(lgcy, 0xFFFFFFFF); put_u32(lgcy, 0);
+    put_u32(lgcy, 0);           // 0 subcategories
+    // Event groups: 1 root group.
+    put_u32(lgcy, 1);           // root_group_count
+    put_u32(lgcy, 1);           // group name STRR index -> "Root"
+    put_u32(lgcy, 0);           // user_property_count
+    put_u32(lgcy, 0);           // subgroup_count
+    put_u32(lgcy, 1);           // event_count
+    // Event (complex = 8).
+    put_u32(lgcy, 8);           // event_type
+    put_u32(lgcy, 2);           // event name STRR index -> "Waterfall"
+    for (int i = 0; i < 16; ++i) lgcy.push_back(static_cast<uint8_t>(i)); // guid
+    put_f32(lgcy, 0.5f); put_f32(lgcy, 0.0f); put_f32(lgcy, 0.0f); put_f32(lgcy, 0.0f); // vol,pitch,pr,vr
+    lgcy.push_back(1); lgcy.push_back(0); // priority u16
+    lgcy.push_back(0); lgcy.push_back(0); // max_instances u16
+    put_u32(lgcy, 2);           // max_playbacks
+    put_u32(lgcy, 10000);       // steal_priority
+    put_u32(lgcy, 0x10000804);  // 3d flags
+    put_f32(lgcy, 0.0f); put_f32(lgcy, 400.0f); // 3d min/max
+    put_u32(lgcy, 0);           // event flags
+    put_u32(lgcy, 0); put_u32(lgcy, 0); // RIFF: 2 extra after event_flags
+    for (int i = 0; i < 8; ++i) put_f32(lgcy, i < 2 ? 1.0f : 0.0f); // speakers
+    put_f32(lgcy, 360.0f); put_f32(lgcy, 360.0f); put_f32(lgcy, 1.0f); // cone
+    put_u32(lgcy, 1);           // max_playbacks_behavior
+    put_f32(lgcy, 1.0f); put_f32(lgcy, 0.0f); put_f32(lgcy, 0.0f); put_f32(lgcy, 0.0f); // dopp,rdry,rwet,spread
+    lgcy.push_back(0); lgcy.push_back(0); lgcy.push_back(0); lgcy.push_back(0); // fade in
+    lgcy.push_back(0); lgcy.push_back(0); lgcy.push_back(0); lgcy.push_back(0); // fade out
+    put_f32(lgcy, 0.0f); put_f32(lgcy, 0.0f); put_f32(lgcy, 1.0f); put_u32(lgcy, 0); // spawn,spawnrand,pan,posrand
+    put_u32(lgcy, 0);           // RIFF: 1 extra before layers
+    put_u32(lgcy, 1);           // layer_count
+    // Layer: flags(2), priority(s16), control(s16), sic(u16), eec(u16).
+    lgcy.push_back(0); lgcy.push_back(0);   // layer flags
+    lgcy.push_back(0xFF); lgcy.push_back(0xFF); // priority -1
+    lgcy.push_back(0); lgcy.push_back(0);   // control param 0
+    lgcy.push_back(0); lgcy.push_back(0);   // sic = 0
+    lgcy.push_back(1); lgcy.push_back(0);   // eec = 1
+    // Envelope: ctrl,dsp,extra,flags,extra,pc,positions[2],tail0,tail1.
+    put_u32(lgcy, 0xFFFFFFFF);  // ctrl = -1
+    put_u32(lgcy, 0);           // dsp
+    put_u32(lgcy, 0);           // extra0
+    put_u32(lgcy, 0x2004);      // flags
+    put_u32(lgcy, 0);           // extra1
+    put_u32(lgcy, 2);           // point_count
+    put_u32(lgcy, 0);           // position 0
+    put_u32(lgcy, 1);           // position 1
+    put_u32(lgcy, 0);           // tail0
+    put_u32(lgcy, 1);           // tail1 (enabled)
+    // Parameters: 0. User properties: 0.
+    put_u32(lgcy, 0);           // param_count
+    put_u32(lgcy, 0);           // user_property_count
+    put_u32(lgcy, 0);           // category_instance_count
+    put_fev_string(lgcy, "");   // category name
+    // Sound def configs, sound defs, reverbs: all 0.
+    put_u32(lgcy, 0);
+    put_u32(lgcy, 0);
+    put_u32(lgcy, 0);
+    // No music data.
+
+    // EPRP: 2 point records (x,y,curve) matching the envelope's 2 points.
+    std::vector<uint8_t> eprp;
+    put_u32(eprp, 2);
+    put_f32(eprp, 0.0f); put_f32(eprp, 0.0f); put_u32(eprp, 2);
+    put_f32(eprp, 1.0f); put_f32(eprp, 1.0f); put_u32(eprp, 2);
+
+    // Assemble PROJ body (chunk order: OBCT, PROP, LGCY, EPRP, STRR, LANG).
+    std::vector<uint8_t> proj;
+    proj.insert(proj.end(), {'P', 'R', 'O', 'J'});
+    append_riff_chunk(proj, "OBCT", obct);
+    append_riff_chunk(proj, "PROP", prop);
+    append_riff_chunk(proj, "LGCY", lgcy);
+    append_riff_chunk(proj, "EPRP", eprp);
+    append_riff_chunk(proj, "STRR", strr);
+    append_riff_chunk(proj, "LANG", lang);
+
+    // RIFF body = FMT + LIST(PROJ).
+    std::vector<uint8_t> riff_body;
+    append_riff_chunk(riff_body, "FMT ", fmt);
+    append_riff_chunk(riff_body, "LIST", proj);
+
+    std::vector<uint8_t> out;
+    out.insert(out.end(), {'R', 'I', 'F', 'F'});
+    put_u32(out, static_cast<uint32_t>(riff_body.size() + 4)); // + "FEV " form
+    out.insert(out.end(), {'F', 'E', 'V', ' '});
+    out.insert(out.end(), riff_body.begin(), riff_body.end());
+    return out;
+}
+
+} // anonymous namespace
+
+TEST(FevRiff, ParsesContainerAndModel) {
+    auto data = build_minimal_riff_fev();
+    auto fev = fev_parse(data);
+
+    EXPECT_TRUE(fev.is_riff);
+    EXPECT_EQ(fev.project_name, "MiniRiff");
+    ASSERT_EQ(fev.banks.size(), 1u);
+    EXPECT_EQ(fev.banks[0].name, "MiniBank");
+    // Per-language checksum array preserved (language 0 mirrored to fsb_checksum).
+    ASSERT_EQ(fev.banks[0].lang_checksums.size(), 1u);
+    EXPECT_EQ(fev.banks[0].lang_checksums[0].ck0, 0xAABBCCDDu);
+    EXPECT_EQ(fev.banks[0].lang_checksums[0].ck1, 0x11223344u);
+    EXPECT_EQ(fev.banks[0].fsb_checksum[0], 0xAABBCCDDu);
+
+    // STRR-indexed names decode.
+    ASSERT_EQ(fev.event_groups.size(), 1u);
+    EXPECT_EQ(fev.event_groups[0].name, "Root");
+    EXPECT_EQ(fev.event_groups[0].name_strr_index, 1);
+    ASSERT_EQ(fev.event_groups[0].events.size(), 1u);
+    const auto& ev = fev.event_groups[0].events[0];
+    EXPECT_EQ(ev.name, "Waterfall");
+    EXPECT_EQ(ev.name_strr_index, 2);
+
+    // Envelope decoded with the RIFF layout (2 points), EPRP coords married on.
+    ASSERT_EQ(ev.layers.size(), 1u);
+    ASSERT_EQ(ev.layers[0].effect_envelopes.size(), 1u);
+    const auto& env = ev.layers[0].effect_envelopes[0];
+    EXPECT_EQ(env.envelope_flags, 0x2004u);
+    ASSERT_EQ(env.points.size(), 2u);
+    EXPECT_FLOAT_EQ(env.points[1].eprp_x, 1.0f);
+    EXPECT_FLOAT_EQ(env.points[1].value, 1.0f);
+
+    // Raw container pieces preserved.
+    EXPECT_EQ(fev.riff.lang_count, 1u);
+    ASSERT_EQ(fev.riff.strr_strings.size(), 3u);
+    EXPECT_EQ(fev.riff.strr_strings[2], "Waterfall");
+    EXPECT_FALSE(fev.riff.lgcy_bytes.empty());
+    EXPECT_FALSE(fev.riff.eprp_bytes.empty());
+}
+
+TEST(FevRiff, WriteRoundTripsByteExact) {
+    auto data = build_minimal_riff_fev();
+    auto fev = fev_parse(data);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
+}
+
+TEST(FevRiff, StrrIndicesPreservedAcrossRoundTrip) {
+    // The event group and event names are STRR indices 1 and 2; a byte-exact
+    // round-trip proves the writer re-emits the SAME indices (not re-derived
+    // strings), and the STRR table itself is reproduced verbatim.
+    auto data = build_minimal_riff_fev();
+    auto fev = fev_parse(data);
+    ASSERT_FALSE(fev.event_groups.empty());
+    EXPECT_EQ(fev.event_groups[0].name_strr_index, 1);
+    EXPECT_EQ(fev.event_groups[0].events[0].name_strr_index, 2);
+    auto out = fev_write(fev);
+    ASSERT_EQ(out, data);
+}
+
+TEST(FevRiff, Fev1FilesRemainNonRiff) {
+    // A FEV1 file must not be flagged as RIFF and must still round-trip via the
+    // flat path (no regression from adding the RIFF branch).
+    auto data = build_real_minimal_fev();
+    auto fev = fev_parse(data);
+    EXPECT_FALSE(fev.is_riff);
+    auto out = fev_write(fev);
+    EXPECT_EQ(out, data);
 }

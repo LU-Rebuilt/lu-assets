@@ -34,10 +34,15 @@ namespace lu::assets {
 //   [4  bytes] data_size           — total size of audio sample data (bytes)
 //   [4  bytes] version             — FSB format version (0x00040000 for FSB4)
 //   [4  bytes] mode                — global mode flags (FMOD_MODE)
-//   [8  bytes] bank_checksums      — two u32 values; these are also stored verbatim
-//                                    in the FEV bank struct's fsb_checksum[2] field.
-//                                    FMOD Event uses these to verify that the FSB
-//                                    paired with a FEV bank is correct.
+//   [8  bytes] bank_checksums      — two u32 values, together an 8-byte truncated
+//                                    MD5 digest of the first sample's source
+//                                    filename (with a "_et_al" suffix appended when
+//                                    the bank has more than one subsound). Confirmed
+//                                    via RE of fmod_designer.exe's FSB4 writer
+//                                    (FUN_006e4c50/FUN_006e2dc0/FUN_006e2cc0) —
+//                                    corrects an earlier assumption that this was an
+//                                    FMOD-Event/FEV cross-check value; it is not.
+//                                    Preserved verbatim regardless of what it means.
 //   [sample_header_size bytes] sample headers
 //   [data_size bytes]          audio sample data
 //
@@ -100,11 +105,37 @@ struct FsbFile {
     uint32_t data_size          = 0;
     uint32_t version            = 0;
     uint32_t mode               = 0;
-    // The 8 reserved bytes from the FSB4 header at offset 24.
-    // These are the FSB-side bank checksums that FMOD Event cross-checks
-    // against the FEV bank's fsb_checksum[2] field on bank load.
+    // The 8 bytes from the FSB4 header at offset 24. NOT an FMOD-Event/FEV
+    // cross-check value (an earlier assumption, now corrected) — see the
+    // module-level comment above: this is an 8-byte truncated MD5 of the first
+    // sample's source filename, confirmed via RE of fmod_designer.exe's writer.
     std::array<uint32_t, 2> bank_checksums = {0, 0};
+    // The 16 bytes at header offset 32-47 (FSB4 only). Confirmed via RE of
+    // fmod_designer.exe (functions FUN_006e2390/FUN_006e2aa0/FUN_006e23f0/
+    // FUN_006e2b70) to be a genuine, standard MD5 digest — not a random GUID: the
+    // exact reference MD5 init constants, round constants, and finalization/padding
+    // logic were all matched byte-for-byte in the disassembly. The MD5 context is a
+    // persistent member of the FSB-bank-build object, fed the 48-byte header buffer
+    // (with this field still zero) once before finalizing.
+    // What remains UNCONFIRMED: the precise bytes hashed. MD5(header bytes 0-31) does
+    // NOT reproduce the real value in any sampled file, so something else is fed into
+    // the same persistent hash context earlier in the build (most likely during the
+    // per-subsound audio-encoding pass) that hasn't been identified via static
+    // analysis alone. Confirming it would require live debugging fmod_designer.exe
+    // (breakpoint at the header-write call, dump the hash context's accumulated
+    // state) — attempted but blocked by lack of a real Windows debugging environment
+    // (pybag/dbgeng needs genuine dbgmodel.dll, which Wine does not implement and
+    // isn't present on this system). See project memory: project_fsb_checksum_re.
+    // Preserved verbatim for byte-perfect round-trip regardless of the exact input.
+    std::array<uint8_t, 16> header_reserved = {};
     std::vector<FsbSampleHeader> samples;
+    // Zero-padding bytes between the true end of the sample header block (sum of
+    // each sample's own declared 2-byte size field) and where sample_header_size
+    // says the block ends. Genuinely real, not a parsing artifact: confirmed across
+    // the full 98-file corpus this gap is either exactly 0 or exactly 16 bytes, in
+    // both cases all-zero, with no num_samples/mode/filename correlation found for
+    // which files get the 16-byte gap. Preserved verbatim rather than assumed.
+    std::vector<uint8_t> sample_header_padding;
     size_t   data_offset        = 0;  // offset where audio data begins
     bool     encrypted          = false;
 };

@@ -1,6 +1,8 @@
 #include "netdevil/common/ldf/ldf_json.h"
 #include "netdevil/common/ldf/ldf_reader.h"
 
+#include <string>
+
 using json = nlohmann::json;
 
 namespace lu::assets {

@@ -1,6 +1,7 @@
 #include "fmod/fsb/fsb_reader.h"
 #include "common/binary_reader/binary_reader.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace lu::assets {
@@ -92,17 +93,21 @@ FsbFile fsb_parse(std::span<const uint8_t> data) {
         fsb.data_size          = r.read_u32();
         fsb.version            = r.read_u32();
         fsb.mode               = r.read_u32();
-        // Bank checksums at offset 24: two u32 values cross-checked by FMOD Event
-        // against the FEV bank's fsb_checksum[2] field when loading the bank.
-        // See fmodex.dll FUN_10040d7e; stored verbatim in FevBank::fsb_checksum[2].
+        // Bank checksums at offset 24: an 8-byte truncated MD5 of the first sample's
+        // source filename (confirmed via RE of fmod_designer.exe's FSB4 writer —
+        // NOT an FMOD-Event/FEV cross-check value, see fsb_types.h). Matches the
+        // paired FEV bank's fsb_checksum[2] field because both independently derive
+        // it from the same filename, not because of any runtime verification.
         fsb.bank_checksums[0] = r.read_u32();
         fsb.bank_checksums[1] = r.read_u32();
 
         // Bytes 32–47: 16-byte bank hash/GUID used by FMOD's internal sound bank
         // cache (fmodex.dll FUN_10040d7e copies the full 48-byte header into a
         // cache-lookup struct and compares these 16 bytes via FUN_1001842b).
-        // Not needed for application-level parsing. Sample headers begin at byte 48.
-        r.seek(48);
+        // Opaque to application-level parsing, but preserved verbatim for
+        // byte-perfect round-trip (see FsbFile::header_reserved).
+        auto reserved = r.read_bytes(16);
+        std::copy(reserved.begin(), reserved.end(), fsb.header_reserved.begin());
 
         // Parse sample headers
         fsb.samples.reserve(fsb.num_samples);
@@ -112,9 +117,14 @@ FsbFile fsb_parse(std::span<const uint8_t> data) {
             FsbSampleHeader sample;
             uint16_t header_size = r.read_u16();
 
-            // Name: 30 bytes null-terminated
+            // Name: a fixed 30-byte field, NUL-padded — but a name that is exactly
+            // 30 characters fills the field with NO NUL terminator (e.g.
+            // "GF_Gorilla_Breathing_Mad_1.wav"), so the string must be bounded to the
+            // 30 bytes explicitly and only then trimmed at the first NUL. Constructing
+            // from a bare const char* would overrun into the next field when no NUL is
+            // present.
             auto name_bytes = r.read_bytes(30);
-            sample.name = std::string(reinterpret_cast<const char*>(name_bytes.data()));
+            sample.name = std::string(reinterpret_cast<const char*>(name_bytes.data()), 30);
             auto null_pos = sample.name.find('\0');
             if (null_pos != std::string::npos) sample.name.resize(null_pos);
 
@@ -146,7 +156,17 @@ FsbFile fsb_parse(std::span<const uint8_t> data) {
             fsb.samples.push_back(std::move(sample));
         }
 
+        // The sample headers just parsed may not fully account for
+        // sample_header_size — a real, occasionally-present trailing zero-padding
+        // gap between the last sample header and the audio data (see
+        // FsbFile::sample_header_padding). r's position right now is exactly the
+        // true end of sample header content; sample_header_size may extend past it.
         fsb.data_offset = 48 + fsb.sample_header_size;
+        if (fsb.data_offset > r.pos()) {
+            size_t padding_size = fsb.data_offset - r.pos();
+            auto padding = r.read_bytes(padding_size);
+            fsb.sample_header_padding.assign(padding.begin(), padding.end());
+        }
     }
     else if (fsb.magic == FSB5_MAGIC) {
         // FSB5 header (different layout — bank checksums not applicable)

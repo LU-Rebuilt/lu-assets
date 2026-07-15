@@ -1,6 +1,8 @@
 #include "netdevil/zone/terrain/terrain_reader.h"
 #include "common/binary_reader/binary_reader.h"
 
+#include <algorithm>
+
 namespace lu::assets {
 
 TerrainFile terrain_parse(std::span<const uint8_t> data) {

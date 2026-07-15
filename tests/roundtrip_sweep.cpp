@@ -6,9 +6,10 @@
 //
 // Formats: .nif/.kf/.etk (shared NIF container), .kfm, .settings, .luz, .lvl, .ast, .zal,
 // .scm, .aud, .lutriggers, .pki, .dds, .tga, .raw (terrain), .psb, .sd0, .g/.g1/.g2
-// (brick geometry), .hkx (binary packfile only — tagged-binary/XML HKX variants are
-// skipped, not round-tripped), and ForkParticle effect scripts (content-sniffed under a
-// plain ".txt" extension).
+// (brick geometry), .hkx (binary packfile AND tagged binary — XML HKX is skipped, not
+// round-tripped: zero real client files use it), .fsb (FMOD sound bank, full
+// decrypt+parse+write+encrypt path), .fev (FMOD event project, FEV1 and RIFF variants), and
+// ForkParticle effect scripts (content-sniffed under a plain ".txt" extension).
 
 #include "gamebryo/nif/nif_reader.h"
 #include "gamebryo/nif/nif_writer.h"
@@ -49,8 +50,12 @@
 #include "lego/brick_geometry/brick_geometry_writer.h"
 #include "lego/lxfml/lxfml_reader.h"
 #include "lego/lxfml/lxfml_writer.h"
-#include "havok/packfile/hkx_packfile_reader.h"
-#include "havok/packfile/hkx_packfile_writer.h"
+#include "havok/unified/hkx_reader.h"
+#include "havok/unified/hkx_writer.h"
+#include "fmod/fsb/fsb_reader.h"
+#include "fmod/fsb/fsb_writer.h"
+#include "fmod/fev/fev_reader.h"
+#include "fmod/fev/fev_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -214,32 +219,66 @@ void check_sd0(const fs::path& path, FormatStats& stats) {
     }
 }
 
-// .hkx ships in three format variants sharing one extension: binary packfile (magic
-// 0x57E0E057 0x10C0C010, round-tripped here), tagged binary (magic 0xCAB00D1E
-// 0xD011FACE), and XML. Only packfile is in scope for this project's round-trip
-// coverage; tagged-binary/XML files must be recognized and SKIPPED rather than fed to
-// the packfile reader (which would just throw a bad-magic error and get miscounted as a
-// parse failure). That "identify by magic, skip non-matching, round-trip the rest" shape
-// doesn't fit the generic check_file() dispatcher (which mismatches, rather than skips,
-// on wrong magic when an extension maps 1:1 to a format), so — like check_sd0() above —
-// .hkx gets its own function.
-void check_hkx_packfile(const fs::path& path, FormatStats& stats) {
+// Standalone .fsb files: decrypt (all LU FSBs are encrypted), parse, write, then
+// re-encrypt and compare against the original on-disk bytes. The audio sample data
+// isn't modeled on FsbFile, so fsb_write needs the decrypted buffer to slice it from;
+// the full path exercises decrypt + parse + write + encrypt end to end.
+void check_fsb(const fs::path& path, FormatStats& stats) {
     auto data = read_file(path);
     if (data.empty()) return;
 
-    static constexpr uint8_t packfile_magic[8] = {
-        0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10
-    };
-    if (data.size() < 8 || memcmp(data.data(), packfile_magic, 8) != 0) {
-        // Tagged-binary (0xCAB00D1E) or XML HKX — out of scope, not a failure.
-        stats.skipped++;
-        return;
-    }
+    std::vector<uint8_t> dec = data;
+    bool was_encrypted = lu::assets::fsb_decrypt(dec);
 
     std::vector<uint8_t> out;
     try {
-        auto pf = lu::assets::hkx_packfile_parse(data);
-        out = lu::assets::hkx_packfile_write(pf);
+        auto fsb = lu::assets::fsb_parse(dec);
+        auto out_dec = lu::assets::fsb_write(fsb, dec);
+        out = was_encrypted ? lu::assets::fsb_encrypt(out_dec) : std::move(out_dec);
+    } catch (const std::exception& ex) {
+        stats.parse_fail++;
+        if (stats.messages.size() < 10) {
+            stats.messages.push_back("PARSE " + path.string() + ": " + ex.what());
+        }
+        return;
+    }
+
+    if (out == data) {
+        stats.ok++;
+        return;
+    }
+    stats.mismatch++;
+    if (stats.messages.size() < 10) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "DIFF  %s: size %zu -> %zu, first diff @ 0x%zx",
+                 path.string().c_str(), data.size(), out.size(), first_diff(data, out));
+        stats.messages.push_back(buf);
+    }
+}
+
+// .hkx ships in three format variants sharing one extension: binary packfile (magic
+// 0x57E0E057 0x10C0C010) and tagged binary (magic 0xCAB00D1E 0xD011FACE) are both
+// round-tripped here via the unified hkx_parse()/hkx_write() dispatcher (see
+// src/havok/unified/), which itself detects which of the two a file is — the sweep
+// tool doesn't sniff magic bytes itself. XML HKX is out of scope for this project
+// (zero real client files use it); hkx_parse() throws HkxFormatError for it (or
+// anything else unrecognized), which this treats as a skip rather than a failure,
+// since it's an intentional scope boundary, not a real-file round-trip bug. That
+// "identify by magic, skip non-matching, round-trip the rest" shape doesn't fit the
+// generic check_file() dispatcher (which mismatches, rather than skips, on wrong magic
+// when an extension maps 1:1 to a format), so — like check_sd0() above — .hkx gets its
+// own function.
+void check_hkx(const fs::path& path, FormatStats& stats) {
+    auto data = read_file(path);
+    if (data.empty()) return;
+
+    std::vector<uint8_t> out;
+    try {
+        auto hkx = lu::assets::hkx_parse(data);
+        out = lu::assets::hkx_write(hkx);
+    } catch (const lu::assets::HkxFormatError&) {
+        stats.skipped++; // XML HKX, or anything else unrecognized — out of scope.
+        return;
     } catch (const std::exception& ex) {
         stats.parse_fail++;
         if (stats.messages.size() < 10) {
@@ -492,6 +531,9 @@ int main(int argc, char* argv[]) {
     const RoundTripFunc brick_geom_rt = [](const std::vector<uint8_t>& d) {
         return lu::assets::brick_geometry_write(lu::assets::brick_geometry_parse(d));
     };
+    const RoundTripFunc fev_rt = [](const std::vector<uint8_t>& d) {
+        return lu::assets::fev_write(lu::assets::fev_parse(d));
+    };
 
     struct Handler {
         const RoundTripFunc* fn;
@@ -520,6 +562,11 @@ int main(int argc, char* argv[]) {
         {".g", {&brick_geom_rt, {}}},
         {".g1", {&brick_geom_rt, {}}},
         {".g2", {&brick_geom_rt, {}}},
+        // FMOD event projects: both the flat FEV1 variant and the RIFF-wrapped
+        // variant (FMOD Designer 4.45) round-trip through the same fev_parse/
+        // fev_write dispatch. Accept both magics so RIFF .fev files aren't skipped
+        // as mis-extensioned.
+        {".fev", {&fev_rt, {"FEV1", "RIFF"}}},
     };
 
     std::map<std::string, FormatStats> stats;
@@ -546,7 +593,11 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             if (ext == ".hkx") {
-                check_hkx_packfile(e.path(), stats[".hkx"]);
+                check_hkx(e.path(), stats[".hkx"]);
+                continue;
+            }
+            if (ext == ".fsb") {
+                check_fsb(e.path(), stats[".fsb"]);
                 continue;
             }
             // ForkParticle effect scripts ship as plain ".txt" (no distinguishing

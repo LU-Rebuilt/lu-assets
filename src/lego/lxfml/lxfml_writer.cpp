@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 namespace lu::assets {
 

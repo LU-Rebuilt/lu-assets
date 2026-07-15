@@ -253,6 +253,18 @@ TEST(NIF, ParseNoHeaderNewlineThrows) {
     EXPECT_THROW(nif_parse(no_newline), NifError);
 }
 
+// A non-NIF file that merely has an early newline (e.g. the LXFML XML brick
+// models stored under a .nif extension in res/BrickModels/) must be rejected up
+// front by the "File Format" banner check, not misparsed into a confusing
+// deep-in-the-header error like "block type name too long".
+TEST(NIF, ParseNonNifXmlThrows) {
+    const char* xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\r\n"
+        "<LXFML versionMajor=\"4\" versionMinor=\"0\">\r\n</LXFML>\r\n";
+    std::vector<uint8_t> data(xml, xml + std::strlen(xml));
+    EXPECT_THROW(nif_parse(data), NifError);
+}
+
 TEST(NIF, ParseMinimalNifZeroBlocks) {
     auto data = build_minimal_nif();
     auto nif = nif_parse(data);
