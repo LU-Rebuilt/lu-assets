@@ -289,18 +289,17 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
                 std::string name = sanitize(node->name, "joint");
                 path = parent_path.empty() ? name : parent_path + "/" + name;
 
-                // Prefer the animation's rest pose for this bone (mesh space),
-                // falling back to the node-hierarchy transform. This keeps the
-                // skeleton in the same space as the mesh and the animation, so it
-                // sits at the model's scale (no giant bind offset) and the
-                // parent-relative animation composes correctly.
-                GfMatrix4d local;
+                // The skeleton's rest pose comes from the animation (mesh space).
+                // A bone the animation doesn't drive must NOT use its NIF node
+                // transform: LU authors some helper/IK bones (Lt_Foot, ik_*_hand)
+                // at a far bind offset (Y≈63) while everything the animation
+                // touches is at ~1 unit, and mixing the two spaces in one skeleton
+                // explodes the rig. So un-animated bones get identity local
+                // (they simply follow their parent), keeping the whole skeleton in
+                // the animation's space.
+                GfMatrix4d local(1.0);
                 auto ov = bind_override.find(node->name);
-                if (ov != bind_override.end()) {
-                    local = ov->second;
-                } else {
-                    local = node_local_matrix(node->translation, node->rotation, node->scale);
-                }
+                if (ov != bind_override.end()) local = ov->second;
                 node_world = local * parent_world;
 
                 topo.joint_names.push_back(node->name);
@@ -452,25 +451,44 @@ void compose(const std::string& out_path,
         for (const auto& kf : parsed_kfs)
             for (const auto& n : collect_kf_joints(kf, -1)) wanted.insert(n);
 
-        // Per-bone bind override from the animation's interpolator defaults (the
-        // rest pose, in mesh space). This keeps the skeleton at the model's real
-        // scale instead of the NIF's far-off bind bone positions.
+        // Per-bone bind override = the FIRST clip's frame-0 pose (the clip that
+        // is bound by default below). UsdSkel treats a SkelAnimation's per-joint
+        // transforms as absolute locals and skins via jointAnimWorld *
+        // inverse(jointBindWorld); the mesh is only undistorted when the bind
+        // pose matches the played clip's rest, so the bind must come from that
+        // exact clip. Use each animated bone's first keyframe (or interpolator
+        // default when it has no keys), in the model's real ~1-unit space — which
+        // also keeps the skeleton at the mesh's scale (no far-off bind bones).
         std::map<std::string, GfMatrix4d> bind_override;
         for (const auto& kf : parsed_kfs) {
+            if (kf.sequences.empty()) continue;
             std::map<uint32_t, const NifTransformInterpolator*> interp_by_block;
             for (const auto& it : kf.transform_interpolators)
                 interp_by_block[it.block_index] = &it;
-            for (const auto& seq : kf.sequences) {
-                for (const auto& cb : seq.controlled_blocks) {
-                    if (bind_override.count(cb.node_name)) continue;
-                    auto it = interp_by_block.find(static_cast<uint32_t>(cb.interpolator_ref));
-                    if (it == interp_by_block.end()) continue;
-                    const NifTransformInterpolator* ip = it->second;
-                    bind_override[cb.node_name] =
-                        node_local_matrix({ip->translation.x, ip->translation.y, ip->translation.z},
-                                          ip->rotation, ip->scale);
+            std::map<uint32_t, const NifTransformData*> data_by_block;
+            for (const auto& td : kf.transform_data)
+                data_by_block[td.block_index] = &td;
+            const NifControllerSequence& seq = kf.sequences.front();
+            for (const auto& cb : seq.controlled_blocks) {
+                if (bind_override.count(cb.node_name)) continue;
+                auto it = interp_by_block.find(static_cast<uint32_t>(cb.interpolator_ref));
+                if (it == interp_by_block.end()) continue;
+                const NifTransformInterpolator* ip = it->second;
+                Vec3 t = ip->translation;
+                Quat rot = ip->rotation;
+                float sc = ip->scale;
+                // Prefer the first keyframe of the channel over the default.
+                auto dit = data_by_block.find(static_cast<uint32_t>(ip->data_ref));
+                if (dit != data_by_block.end()) {
+                    const NifTransformData* td = dit->second;
+                    if (!td->translation_keys.empty()) t = td->translation_keys.front().value;
+                    if (!td->rotation_keys.empty()) rot = td->rotation_keys.front().value;
+                    if (!td->scale_keys.empty()) sc = td->scale_keys.front().value;
                 }
+                bind_override[cb.node_name] =
+                    node_local_matrix({t.x, t.y, t.z}, rot, sc);
             }
+            break; // only the first (bound) clip defines the bind pose
         }
         SkeletonTopology topo = build_skeleton_topology(*model, wanted, bind_override);
 
@@ -481,11 +499,12 @@ void compose(const std::string& out_path,
 
         author_skeleton_hierarchical(stage, skel_path, topo.joint_paths, topo.local_bind);
 
-        // The mesh lives in a different space than the bones; bridge it into
-        // bone space with a geomBindTransform so skinning resolves correctly.
-        model_geom_bind = build_geom_bind_transform(
-            topo.world_bind, build_skin_to_bone(*model));
-        have_geom_bind = true;
+        // The skeleton is now in the animation's (== mesh) space, so the mesh
+        // needs no geomBind bridge — it's authored where the bones' bind pose is.
+        // (An earlier design put bones in NIF node space and used geomBind =
+        // skinToBone * worldBind to bridge; with the anim-space bind that no
+        // longer matches skinToBone's space, so leave geomBind identity.)
+        have_geom_bind = false;
     } else {
         std::set<std::string> seen;
         for (const auto& kf : parsed_kfs)
