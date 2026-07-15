@@ -1,5 +1,13 @@
 # usd — Universal Scene Description translation layer
 
+> **⚠️ WORK IN PROGRESS.** This whole USD layer is under active development and
+> not production-ready. Static geometry, materials, textures and collision export
+> work well and validate under `usdchecker`. Skeletal **animation playback does
+> not yet work correctly** — the composed rig imports and the model renders at
+> the right scale, but the mesh does not deform when animations play (a
+> node-space vs skin-space reconciliation problem, see "Known limitations"), and
+> a stray oversized display bone remains. Treat animated output as experimental.
+
 Bridges LU's native asset formats to [OpenUSD](https://openusd.org) for
 content authoring in DCC tools (Blender, Houdini, Maya, `usdview`). It sits
 **on top of** the existing format readers/extractors in this library — it does
@@ -12,15 +20,32 @@ consumers of the core `lu_assets` library don't need. It builds as a separate
 
 ## Status
 
-Phased effort.
+Phased effort — **all phases are WIP**; the states below mean "implemented",
+not "fully correct". See "Known limitations" for what still fails.
 
 | Phase | Scope | State |
 |-------|-------|-------|
-| 1 | NIF → USD (mesh, materials, textures, vertex colors) | **done** |
-| 2 | USD → NIF import (client-accepts fidelity bar) | **done** |
-| 3a | KF animation → UsdSkel | **done** |
-| 3b | HKX collision → USD | **done** |
-| 4 | Object composition — gather a whole object (model + all animations + collision) into one stage, driven by a KFM manifest or a CDClient LOT | **done** |
+| 1 | NIF → USD (mesh, materials, textures, vertex colors) | works |
+| 2 | USD → NIF import (client-accepts fidelity bar) | works (geometry/materials) |
+| 3a | KF animation → UsdSkel | implemented; **playback WIP** |
+| 3b | HKX collision → USD | works |
+| 4 | Object composition — gather a whole object (model + all animations + collision) into one stage, driven by a KFM manifest or a CDClient LOT | implemented; **skeletal deform WIP** |
+
+## Known limitations (WIP)
+
+- **Animated mesh does not deform.** The composed model renders upright and at
+  the correct scale, and a clip is bound, but playing it does not move the mesh.
+  Root cause: LU KF animation is authored in node-hierarchy space, while some
+  models (e.g. `mf_main_noLOD`, the player minifig) place their skinning bind
+  pose in a different space (bones at Y≈63 while the mesh is ~4 units) via
+  `NiSkinData`. Reconciling the two spaces so the animation drives the skin is
+  unsolved.
+- **Stray oversized display bone.** The skeleton mixes skin-space bind bones
+  (Y≈63) with node-space plumbing bones (Y≈0); the long connection between them
+  draws as a giant bone in Blender. The skinned mesh is unaffected (it renders
+  correctly) — this is a rig-display issue.
+- **Large objects can overwhelm a DCC viewport.** The minifig's ~1100 clips make
+  an ~85 MB stage that can crash interactive Blender; use `object2usd --max-anims N`.
 
 ## `nif_to_usd`
 
