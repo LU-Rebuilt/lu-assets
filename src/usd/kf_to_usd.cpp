@@ -169,19 +169,41 @@ void author_clip(const UsdStagePtr& stage, const SdfPath& skel_root_path,
     UsdAttribute rAttr = anim.CreateRotationsAttr();
     UsdAttribute sAttr = anim.CreateScalesAttr();
 
+    // NiTransformInterpolator uses +/-FLT_MAX as a "channel unset — use identity"
+    // sentinel (a bone with no scale key stores scale = -FLT_MAX, etc.). Passing
+    // those through overflows the half-precision scale to +/-inf and makes the
+    // matrix non-decomposable (the whole rig then imports broken). Sanitize.
+    auto finite_or = [](float v, float fallback) {
+        return (std::isfinite(v) && std::abs(v) < 1e30f) ? v : fallback;
+    };
+
     for (float t : times) {
         VtArray<GfVec3f> trans(channels.size(), GfVec3f(0));
         VtArray<GfQuatf> rots(channels.size(), GfQuatf(1, 0, 0, 0));
         VtArray<GfVec3h> scales(channels.size(), GfVec3h(1));
         for (size_t j = 0; j < channels.size(); ++j) {
             const Chan& c = channels[j];
-            GfVec3f defT(c.interp->translation.x, c.interp->translation.y, c.interp->translation.z);
-            GfQuatf defR(c.interp->rotation.w, c.interp->rotation.x, c.interp->rotation.y, c.interp->rotation.z);
-            float defS = c.interp->scale;
+            GfVec3f defT(finite_or(c.interp->translation.x, 0.0f),
+                         finite_or(c.interp->translation.y, 0.0f),
+                         finite_or(c.interp->translation.z, 0.0f));
+            GfQuatf defR(finite_or(c.interp->rotation.w, 1.0f),
+                         finite_or(c.interp->rotation.x, 0.0f),
+                         finite_or(c.interp->rotation.y, 0.0f),
+                         finite_or(c.interp->rotation.z, 0.0f));
+            float defS = finite_or(c.interp->scale, 1.0f);
             if (c.data) {
-                trans[j] = sample_translation(*c.data, t, defT);
-                rots[j] = sample_rotation(*c.data, t, defR);
-                scales[j] = GfVec3h(sample_scale(*c.data, t, defS));
+                GfVec3f st = sample_translation(*c.data, t, defT);
+                trans[j] = GfVec3f(finite_or(st[0], 0.0f), finite_or(st[1], 0.0f),
+                                   finite_or(st[2], 0.0f));
+                GfQuatf sr = sample_rotation(*c.data, t, defR);
+                GfQuatf clean(finite_or(sr.GetReal(), 1.0f),
+                              GfVec3f(finite_or(sr.GetImaginary()[0], 0.0f),
+                                      finite_or(sr.GetImaginary()[1], 0.0f),
+                                      finite_or(sr.GetImaginary()[2], 0.0f)));
+                if (clean.GetLength() < 1e-6f) clean = GfQuatf(1, 0, 0, 0);
+                clean.Normalize();
+                rots[j] = clean;
+                scales[j] = GfVec3h(finite_or(sample_scale(*c.data, t, defS), 1.0f));
             } else {
                 trans[j] = defT;
                 rots[j] = defR;

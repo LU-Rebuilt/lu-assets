@@ -22,6 +22,7 @@
 #include <pxr/base/tf/token.h>
 
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -214,54 +215,85 @@ struct SkeletonTopology {
     std::vector<GfMatrix4d> local_bind;      // joint-local (parent-relative) bind xform
 };
 
+// Guard against NIF's +/-FLT_MAX "unset" sentinels, which would otherwise poison
+// a transform (and, via half-precision scale, produce inf).
+static double finite_or(double v, double fallback) {
+    return (std::isfinite(v) && std::abs(v) < 1e30) ? v : fallback;
+}
+
 // Convert a node's local TRS to a GfMatrix4d (USD row-vector convention).
 static GfMatrix4d node_local_matrix(const Vec3& t, const Quat& q, float s) {
     GfMatrix4d m(1.0);
-    m.SetRotate(GfQuatd(q.w, q.x, q.y, q.z));
+    m.SetRotate(GfQuatd(finite_or(q.w, 1.0), finite_or(q.x, 0.0),
+                        finite_or(q.y, 0.0), finite_or(q.z, 0.0)));
+    double sc = finite_or(s, 1.0);
     for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c) m[r][c] *= s;
-    m.SetTranslateOnly(GfVec3d(t.x, t.y, t.z));
+        for (int c = 0; c < 3; ++c) m[r][c] *= sc;
+    m.SetTranslateOnly(GfVec3d(finite_or(t.x, 0.0), finite_or(t.y, 0.0),
+                               finite_or(t.z, 0.0)));
     return m;
 }
 
-// Walk the NIF node hierarchy under the skeleton and emit a SkeletonTopology:
-// only nodes that are actually animated or skinned to (plus their ancestors, so
-// the parent chain is intact) become joints. joint paths encode parenting so
-// UsdSkel composes the parent-relative animation transforms correctly.
+// Walk the NIF node hierarchy and emit a SkeletonTopology of ONLY the real
+// bones: nodes named in `wanted` (animated or skinned to) plus the ancestor
+// chain up to each, so parenting stays valid. Scene-graph plumbing that is not
+// an ancestor of any bone — LOD groups, the mesh shape nodes, etc. — is pruned,
+// which otherwise produces a stray oversized bone and clutters the rig. Joint
+// paths encode parenting so UsdSkel composes parent-relative animation correctly.
 SkeletonTopology build_skeleton_topology(const NifFile& nif,
                                          const std::set<std::string>& wanted) {
-    // Index nodes by block, and find each node's children.
     std::map<uint32_t, const NifNode*> by_block;
     for (const auto& n : nif.nodes) by_block[n.block_index] = &n;
+
+    // parent[block] = parent block (or -1 for a root).
+    std::map<uint32_t, int32_t> parent;
+    for (const auto& n : nif.nodes)
+        for (int32_t ch : n.children)
+            parent[static_cast<uint32_t>(ch)] = static_cast<int32_t>(n.block_index);
+
+    // Keep set = every wanted node plus all its ancestors.
+    std::set<uint32_t> keep;
+    for (const auto& n : nif.nodes) {
+        if (!wanted.count(n.name)) continue;
+        int32_t b = static_cast<int32_t>(n.block_index);
+        while (b >= 0 && keep.insert(static_cast<uint32_t>(b)).second) {
+            auto it = parent.find(static_cast<uint32_t>(b));
+            b = it != parent.end() ? it->second : -1;
+        }
+    }
+    // Nothing wanted (or no skinned/animated bones): fall back to keeping all.
+    const bool keep_all = keep.empty();
 
     SkeletonTopology topo;
     std::function<void(const NifNode*, const std::string&)> visit =
         [&](const NifNode* node, const std::string& parent_path) {
             if (!node) return;
+            const bool kept = keep_all || keep.count(node->block_index);
             std::string name = sanitize(node->name, "joint");
-            std::string path = parent_path.empty() ? name : parent_path + "/" + name;
-            // Emit this node as a joint (we keep the whole chain so parenting is
-            // valid; unwanted leaf-only nodes are naturally excluded by recursion
-            // stopping, but interior nodes on the path to a wanted joint stay).
-            topo.joint_names.push_back(node->name);
-            topo.joint_paths.push_back(path);
-            topo.local_bind.push_back(
-                node_local_matrix(node->translation, node->rotation, node->scale));
+            std::string path;
+            if (kept) {
+                path = parent_path.empty() ? name : parent_path + "/" + name;
+                topo.joint_names.push_back(node->name);
+                topo.joint_paths.push_back(path);
+                topo.local_bind.push_back(
+                    node_local_matrix(node->translation, node->rotation, node->scale));
+            } else {
+                // Skip this node but let kept descendants (if any) attach to the
+                // nearest kept ancestor path.
+                path = parent_path;
+            }
             for (int32_t ch : node->children) {
                 auto it = by_block.find(static_cast<uint32_t>(ch));
                 if (it != by_block.end()) visit(it->second, path);
             }
         };
 
-    // Roots: nodes that are not a child of any other node.
     std::set<uint32_t> is_child;
     for (const auto& n : nif.nodes)
         for (int32_t ch : n.children) is_child.insert(static_cast<uint32_t>(ch));
     for (const auto& n : nif.nodes) {
         if (!is_child.count(n.block_index)) visit(&n, "");
     }
-
-    (void)wanted; // Full hierarchy is emitted; wanted-set filtering can prune later.
     return topo;
 }
 
