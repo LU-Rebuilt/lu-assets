@@ -4,8 +4,7 @@
 > geometry, materials, textures and collision export work and validate under
 > `usdchecker`. Composed rigs (model + skeleton + animation) now import into
 > Blender and the skinned mesh **deforms correctly on playback**. Some rough
-> edges remain (a stray oversized display bone from the model's authored bone
-> positions; per-clip decompose warnings on a few animations). Treat as beta.
+> edges remain (per-clip decompose warnings on a few animations). Treat as beta.
 
 Bridges LU's native asset formats to [OpenUSD](https://openusd.org) for
 content authoring in DCC tools (Blender, Houdini, Maya, `usdview`). It sits
@@ -33,10 +32,16 @@ not "fully correct". See "Known limitations" for what still fails.
 ## Skinning & animation (how it fits together)
 
 A composed rig is a `UsdSkelSkeleton` (bone hierarchy from the model's NIF node
-tree, bind pose in node space — the same space the KF animation is authored in),
-`UsdSkelAnimation` clips (per-joint TRS, node space), and skinned `UsdGeomMesh`es
+tree), `UsdSkelAnimation` clips (per-joint TRS), and skinned `UsdGeomMesh`es
 (joint weights from the NIF). LU authors the mesh, the bones and the skin in
-different coordinate spaces; three pieces bridge them:
+different coordinate spaces; the pieces that bridge them:
+
+- **Bind pose from the animation, not the node transforms.** LU model NIFs
+  author some bones at a bind offset far from the mesh (`root` at Y≈64 while the
+  mesh and every animated pose are at ~1 unit) — using those would draw a giant
+  bone and put the skeleton in a different space than the animation. The
+  skeleton's bind pose is taken from the KF interpolator defaults (the rest
+  pose), so the skeleton, mesh and animation all share one space.
 
 - **Skin weights** come from `NiSkinData` when present, else from the
   `NiSkinPartition` (the GPU-optimized block — many LU models, including the
@@ -53,9 +58,6 @@ Verified: the composed minifig deforms correctly on playback in Blender.
 
 ## Known limitations (WIP)
 
-- **Stray oversized display bone.** The model authors some bones far from the
-  origin (Y≈63 while the mesh is ~4 units); Blender draws the connection as a
-  large bone. Cosmetic — the skinned mesh renders and deforms correctly.
 - **A few per-clip decompose warnings** remain on specific animations.
 - **Large objects can overwhelm a DCC viewport.** The minifig's ~1100 clips make
   an ~85 MB stage that can crash interactive Blender; use `object2usd --max-anims N`.

@@ -239,12 +239,18 @@ static GfMatrix4d node_local_matrix(const Vec3& t, const Quat& q, float s) {
 // bones: nodes named in `wanted` (animated or skinned to) plus the ancestor
 // chain up to each, so parenting stays valid. Scene-graph plumbing that is not
 // an ancestor of any bone — LOD groups, the mesh shape nodes, etc. — is pruned.
-// Joint paths encode parenting so UsdSkel composes parent-relative animation
-// correctly. The bind pose is the NODE-hierarchy transform (the same space the
-// KF animation is authored in); the mesh, authored in a different space, is
-// bridged into this bone space by its geomBindTransform.
+// Joint paths encode parenting so UsdSkel composes parent-relative animation.
+//
+// bind_override maps a bone name to its parent-relative bind transform taken
+// from the KF animation's interpolator defaults. LU model NIFs author some bone
+// nodes at a bind offset far from the mesh (e.g. `root` at Y≈64 while the mesh
+// and every animated pose are at ~1 unit), which would draw a giant bone and put
+// the skeleton in a different space than the animation. Using the animation's
+// rest pose puts the skeleton in the SAME space as the mesh and the animation.
+// A bone with no override falls back to its node-hierarchy transform.
 SkeletonTopology build_skeleton_topology(const NifFile& nif,
-                                         const std::set<std::string>& wanted) {
+                                         const std::set<std::string>& wanted,
+                                         const std::map<std::string, GfMatrix4d>& bind_override) {
     std::map<uint32_t, const NifNode*> by_block;
     for (const auto& n : nif.nodes) by_block[n.block_index] = &n;
 
@@ -283,16 +289,18 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
                 std::string name = sanitize(node->name, "joint");
                 path = parent_path.empty() ? name : parent_path + "/" + name;
 
-                // The skeleton bind pose MUST live in the same space the KF
-                // animation is authored in — node-hierarchy space — so the
-                // animation's parent-relative transforms compose against a
-                // matching rest pose. (An earlier attempt used the NiSkinData
-                // bind pose here; that put the rest pose in a different space
-                // than the animation, so nothing deformed.) The mesh, which is
-                // authored in a different space again, is bridged into this bone
-                // space by its geomBindTransform (see build_geom_bind_transform).
-                GfMatrix4d local =
-                    node_local_matrix(node->translation, node->rotation, node->scale);
+                // Prefer the animation's rest pose for this bone (mesh space),
+                // falling back to the node-hierarchy transform. This keeps the
+                // skeleton in the same space as the mesh and the animation, so it
+                // sits at the model's scale (no giant bind offset) and the
+                // parent-relative animation composes correctly.
+                GfMatrix4d local;
+                auto ov = bind_override.find(node->name);
+                if (ov != bind_override.end()) {
+                    local = ov->second;
+                } else {
+                    local = node_local_matrix(node->translation, node->rotation, node->scale);
+                }
                 node_world = local * parent_world;
 
                 topo.joint_names.push_back(node->name);
@@ -443,7 +451,28 @@ void compose(const std::string& out_path,
         std::set<std::string> wanted;
         for (const auto& kf : parsed_kfs)
             for (const auto& n : collect_kf_joints(kf, -1)) wanted.insert(n);
-        SkeletonTopology topo = build_skeleton_topology(*model, wanted);
+
+        // Per-bone bind override from the animation's interpolator defaults (the
+        // rest pose, in mesh space). This keeps the skeleton at the model's real
+        // scale instead of the NIF's far-off bind bone positions.
+        std::map<std::string, GfMatrix4d> bind_override;
+        for (const auto& kf : parsed_kfs) {
+            std::map<uint32_t, const NifTransformInterpolator*> interp_by_block;
+            for (const auto& it : kf.transform_interpolators)
+                interp_by_block[it.block_index] = &it;
+            for (const auto& seq : kf.sequences) {
+                for (const auto& cb : seq.controlled_blocks) {
+                    if (bind_override.count(cb.node_name)) continue;
+                    auto it = interp_by_block.find(static_cast<uint32_t>(cb.interpolator_ref));
+                    if (it == interp_by_block.end()) continue;
+                    const NifTransformInterpolator* ip = it->second;
+                    bind_override[cb.node_name] =
+                        node_local_matrix({ip->translation.x, ip->translation.y, ip->translation.z},
+                                          ip->rotation, ip->scale);
+                }
+            }
+        }
+        SkeletonTopology topo = build_skeleton_topology(*model, wanted, bind_override);
 
         joint_names = topo.joint_names;
         joint_paths = topo.joint_paths;
