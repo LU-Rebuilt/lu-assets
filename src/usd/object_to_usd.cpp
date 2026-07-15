@@ -234,14 +234,25 @@ static GfMatrix4d node_local_matrix(const Vec3& t, const Quat& q, float s) {
     return m;
 }
 
+std::map<std::string, GfMatrix4d> build_bind_pose(const NifFile& nif); // fwd
+
 // Walk the NIF node hierarchy and emit a SkeletonTopology of ONLY the real
 // bones: nodes named in `wanted` (animated or skinned to) plus the ancestor
 // chain up to each, so parenting stays valid. Scene-graph plumbing that is not
 // an ancestor of any bone — LOD groups, the mesh shape nodes, etc. — is pruned,
 // which otherwise produces a stray oversized bone and clutters the rig. Joint
 // paths encode parenting so UsdSkel composes parent-relative animation correctly.
+//
+// bind_world maps a bone name to its world-space bind transform from the model's
+// skin data. In some models (e.g. mf_main_noLOD) the raw bone-node local
+// transforms are authored in a space that does NOT match the mesh — a bone sits
+// at Y=63 while the mesh is ~4 units — and the NiSkinData bind pose is what
+// aligns the skin to the geometry. So a bone's local_bind is derived from the
+// skin bind pose (world_bind * inverse(parent_world_bind)) when available, and
+// only falls back to the node-hierarchy transform for bones with no skin entry.
 SkeletonTopology build_skeleton_topology(const NifFile& nif,
-                                         const std::set<std::string>& wanted) {
+                                         const std::set<std::string>& wanted,
+                                         const std::map<std::string, GfMatrix4d>& bind_world) {
     std::map<uint32_t, const NifNode*> by_block;
     for (const auto& n : nif.nodes) by_block[n.block_index] = &n;
 
@@ -261,30 +272,44 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
             b = it != parent.end() ? it->second : -1;
         }
     }
-    // Nothing wanted (or no skinned/animated bones): fall back to keeping all.
     const bool keep_all = keep.empty();
 
     SkeletonTopology topo;
-    std::function<void(const NifNode*, const std::string&)> visit =
-        [&](const NifNode* node, const std::string& parent_path) {
+    // world_of[name] = the world bind matrix used for a kept bone, so a child can
+    // divide it out to get its parent-relative local transform.
+    std::map<std::string, GfMatrix4d> world_of;
+
+    std::function<void(const NifNode*, const std::string&, const GfMatrix4d&)> visit =
+        [&](const NifNode* node, const std::string& parent_path,
+            const GfMatrix4d& parent_world) {
             if (!node) return;
             const bool kept = keep_all || keep.count(node->block_index);
-            std::string name = sanitize(node->name, "joint");
-            std::string path;
+            std::string path = parent_path;
+            GfMatrix4d node_world = parent_world;
+
             if (kept) {
+                std::string name = sanitize(node->name, "joint");
                 path = parent_path.empty() ? name : parent_path + "/" + name;
+
+                // Prefer the skin-data world bind for this bone; else accumulate
+                // the node-hierarchy transform (node_local * parent_world).
+                GfMatrix4d node_local =
+                    node_local_matrix(node->translation, node->rotation, node->scale);
+                auto bw = bind_world.find(node->name);
+                node_world = (bw != bind_world.end()) ? bw->second
+                                                       : node_local * parent_world;
+
+                // Local (parent-relative) = world * inverse(parent_world).
+                GfMatrix4d local = node_world * parent_world.GetInverse();
+
                 topo.joint_names.push_back(node->name);
                 topo.joint_paths.push_back(path);
-                topo.local_bind.push_back(
-                    node_local_matrix(node->translation, node->rotation, node->scale));
-            } else {
-                // Skip this node but let kept descendants (if any) attach to the
-                // nearest kept ancestor path.
-                path = parent_path;
+                topo.local_bind.push_back(local);
+                world_of[path] = node_world;
             }
             for (int32_t ch : node->children) {
                 auto it = by_block.find(static_cast<uint32_t>(ch));
-                if (it != by_block.end()) visit(it->second, path);
+                if (it != by_block.end()) visit(it->second, path, node_world);
             }
         };
 
@@ -292,7 +317,7 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
     for (const auto& n : nif.nodes)
         for (int32_t ch : n.children) is_child.insert(static_cast<uint32_t>(ch));
     for (const auto& n : nif.nodes) {
-        if (!is_child.count(n.block_index)) visit(&n, "");
+        if (!is_child.count(n.block_index)) visit(&n, "", GfMatrix4d(1.0));
     }
     return topo;
 }
@@ -406,7 +431,8 @@ void compose(const std::string& out_path,
         std::set<std::string> wanted;
         for (const auto& kf : parsed_kfs)
             for (const auto& n : collect_kf_joints(kf, -1)) wanted.insert(n);
-        SkeletonTopology topo = build_skeleton_topology(*model, wanted);
+        std::map<std::string, GfMatrix4d> bind_world = build_bind_pose(*model);
+        SkeletonTopology topo = build_skeleton_topology(*model, wanted, bind_world);
 
         joint_names = topo.joint_names;
         joint_paths = topo.joint_paths;
