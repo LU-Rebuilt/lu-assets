@@ -21,6 +21,7 @@
 #include <pxr/base/vt/array.h>
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
+#include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/tf/token.h>
 
 #include <algorithm>
@@ -131,15 +132,23 @@ UsdShadeMaterial author_material(const UsdStagePtr& stage,
 int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
                      const NifFile& nif, const NifToUsdOptions& options,
                      const SdfPath& skel_path,
-                     const std::vector<std::string>& skel_joints) {
+                     const std::vector<std::string>& skel_joints,
+                     const GfMatrix4d* geom_bind) {
     NifRenderExtractionResult extracted = extractNifRenderGeometry(nif);
 
     // Map skeleton joint name -> index, for remapping a mesh's per-vertex bone
     // indices (which are relative to the mesh's own bone list) onto the shared
     // skeleton's joint order.
+    // Map a bone name -> its skeleton joint index. skel_joints are hierarchical
+    // USD joint PATHS ("a/b/bone"), but a NIF skin references bones by their bare
+    // name ("bone"), so key on the last path segment.
     std::unordered_map<std::string, int> skel_joint_index;
     for (size_t i = 0; i < skel_joints.size(); ++i) {
-        skel_joint_index.emplace(skel_joints[i], static_cast<int>(i));
+        const std::string& p = skel_joints[i];
+        size_t slash = p.find_last_of('/');
+        std::string leaf = slash == std::string::npos ? p : p.substr(slash + 1);
+        // First occurrence wins (bone names are unique in practice).
+        skel_joint_index.emplace(leaf, static_cast<int>(i));
     }
     const bool bind_skin = !skel_path.IsEmpty() && !skel_joints.empty();
 
@@ -278,7 +287,10 @@ int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
                     std::vector<std::pair<int, float>> resolved;
                     for (const auto& in : infl) {
                         if (in.bone_index >= rmesh.skin_bone_names.size()) continue;
-                        auto it = skel_joint_index.find(rmesh.skin_bone_names[in.bone_index]);
+                        // Joint leaf names were sanitized when the skeleton was
+                        // built, so sanitize the skin bone name to match.
+                        auto it = skel_joint_index.find(
+                            sanitize_prim_name(rmesh.skin_bone_names[in.bone_index], "joint"));
                         if (it == skel_joint_index.end()) continue;
                         resolved.push_back({it->second, in.weight});
                     }
@@ -304,6 +316,12 @@ int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
                 jw.Set(joint_weights);
                 // Bind the mesh to the shared skeleton.
                 skel_binding.CreateSkeletonRel().SetTargets({skel_path});
+                // geomBindTransform bridges mesh-local space into the skeleton's
+                // bind space when the mesh and bones were authored in different
+                // spaces (LU models commonly are).
+                if (geom_bind) {
+                    skel_binding.CreateGeomBindTransformAttr().Set(*geom_bind);
+                }
             }
         }
     }
@@ -340,7 +358,7 @@ void nif_to_usd(const NifFile& nif,
     }
 
     // Standalone export: no skeleton to bind against (static meshes).
-    author_nif_model(stage, root_path, nif, options, SdfPath(), {});
+    author_nif_model(stage, root_path, nif, options, SdfPath(), {}, nullptr);
 
     stage->GetRootLayer()->Save();
 }

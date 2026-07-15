@@ -213,6 +213,7 @@ struct SkeletonTopology {
     std::vector<std::string> joint_names;    // bare bone names, hierarchy order
     std::vector<std::string> joint_paths;    // "parent/child/…" USD joint paths
     std::vector<GfMatrix4d> local_bind;      // joint-local (parent-relative) bind xform
+    std::map<std::string, GfMatrix4d> world_bind; // bone name -> world bind (node space)
 };
 
 // Guard against NIF's +/-FLT_MAX "unset" sentinels, which would otherwise poison
@@ -234,25 +235,16 @@ static GfMatrix4d node_local_matrix(const Vec3& t, const Quat& q, float s) {
     return m;
 }
 
-std::map<std::string, GfMatrix4d> build_bind_pose(const NifFile& nif); // fwd
-
 // Walk the NIF node hierarchy and emit a SkeletonTopology of ONLY the real
 // bones: nodes named in `wanted` (animated or skinned to) plus the ancestor
 // chain up to each, so parenting stays valid. Scene-graph plumbing that is not
-// an ancestor of any bone — LOD groups, the mesh shape nodes, etc. — is pruned,
-// which otherwise produces a stray oversized bone and clutters the rig. Joint
-// paths encode parenting so UsdSkel composes parent-relative animation correctly.
-//
-// bind_world maps a bone name to its world-space bind transform from the model's
-// skin data. In some models (e.g. mf_main_noLOD) the raw bone-node local
-// transforms are authored in a space that does NOT match the mesh — a bone sits
-// at Y=63 while the mesh is ~4 units — and the NiSkinData bind pose is what
-// aligns the skin to the geometry. So a bone's local_bind is derived from the
-// skin bind pose (world_bind * inverse(parent_world_bind)) when available, and
-// only falls back to the node-hierarchy transform for bones with no skin entry.
+// an ancestor of any bone — LOD groups, the mesh shape nodes, etc. — is pruned.
+// Joint paths encode parenting so UsdSkel composes parent-relative animation
+// correctly. The bind pose is the NODE-hierarchy transform (the same space the
+// KF animation is authored in); the mesh, authored in a different space, is
+// bridged into this bone space by its geomBindTransform.
 SkeletonTopology build_skeleton_topology(const NifFile& nif,
-                                         const std::set<std::string>& wanted,
-                                         const std::map<std::string, GfMatrix4d>& bind_world) {
+                                         const std::set<std::string>& wanted) {
     std::map<uint32_t, const NifNode*> by_block;
     for (const auto& n : nif.nodes) by_block[n.block_index] = &n;
 
@@ -291,20 +283,22 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
                 std::string name = sanitize(node->name, "joint");
                 path = parent_path.empty() ? name : parent_path + "/" + name;
 
-                // Prefer the skin-data world bind for this bone; else accumulate
-                // the node-hierarchy transform (node_local * parent_world).
-                GfMatrix4d node_local =
+                // The skeleton bind pose MUST live in the same space the KF
+                // animation is authored in — node-hierarchy space — so the
+                // animation's parent-relative transforms compose against a
+                // matching rest pose. (An earlier attempt used the NiSkinData
+                // bind pose here; that put the rest pose in a different space
+                // than the animation, so nothing deformed.) The mesh, which is
+                // authored in a different space again, is bridged into this bone
+                // space by its geomBindTransform (see build_geom_bind_transform).
+                GfMatrix4d local =
                     node_local_matrix(node->translation, node->rotation, node->scale);
-                auto bw = bind_world.find(node->name);
-                node_world = (bw != bind_world.end()) ? bw->second
-                                                       : node_local * parent_world;
-
-                // Local (parent-relative) = world * inverse(parent_world).
-                GfMatrix4d local = node_world * parent_world.GetInverse();
+                node_world = local * parent_world;
 
                 topo.joint_names.push_back(node->name);
                 topo.joint_paths.push_back(path);
                 topo.local_bind.push_back(local);
+                topo.world_bind[node->name] = node_world;
                 world_of[path] = node_world;
             }
             for (int32_t ch : node->children) {
@@ -322,26 +316,25 @@ SkeletonTopology build_skeleton_topology(const NifFile& nif,
     return topo;
 }
 
-// Build jointName -> world-space bind transform (GfMatrix4d) from a model NIF's
-// skin data. NiSkinData stores each bone's *skin-to-bone* offset (the inverse
-// bind matrix); UsdSkel wants the bind matrix, so we invert. The bone name comes
-// from the paired NiSkinInstance's bone_refs -> node. Rows/cols follow USD's
-// row-vector convention (translation in the last row).
-std::map<std::string, GfMatrix4d> build_bind_pose(const NifFile& nif) {
-    std::map<std::string, GfMatrix4d> bind;
+// Build boneName -> NiSkinData skin-to-bone offset (the transform from mesh/skin
+// space into that bone's local space at bind time). The bone name comes from the
+// paired NiSkinInstance's bone_refs -> node. Row-vector convention.
+std::map<std::string, GfMatrix4d> build_skin_to_bone(const NifFile& nif) {
+    std::map<std::string, GfMatrix4d> offsets;
     auto node_name = [&](int32_t block) -> std::string {
         for (const auto& n : nif.nodes)
             if (static_cast<int32_t>(n.block_index) == block) return n.name;
         return {};
     };
     auto to_matrix = [](const Vec3& t, const Quat& q, float s) {
-        GfQuatd quat(q.w, q.x, q.y, q.z);
         GfMatrix4d m(1.0);
-        m.SetRotate(quat);
-        // Apply uniform scale to the rotation basis, then set translation.
+        m.SetRotate(GfQuatd(finite_or(q.w, 1.0), finite_or(q.x, 0.0),
+                            finite_or(q.y, 0.0), finite_or(q.z, 0.0)));
+        double sc = finite_or(s, 1.0);
         for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 3; ++c) m[r][c] *= s;
-        m.SetTranslateOnly(GfVec3d(t.x, t.y, t.z));
+            for (int c = 0; c < 3; ++c) m[r][c] *= sc;
+        m.SetTranslateOnly(GfVec3d(finite_or(t.x, 0.0), finite_or(t.y, 0.0),
+                                   finite_or(t.z, 0.0)));
         return m;
     };
     for (size_t si = 0; si < nif.skin_instances.size(); ++si) {
@@ -354,14 +347,31 @@ std::map<std::string, GfMatrix4d> build_bind_pose(const NifFile& nif) {
         const size_t n = std::min(inst.bone_refs.size(), sd->bones.size());
         for (size_t b = 0; b < n; ++b) {
             std::string name = node_name(inst.bone_refs[b]);
-            if (name.empty() || bind.count(name)) continue;
-            // NiSkinData bone transform = skin-to-bone (inverse bind). Invert it.
-            GfMatrix4d inv_bind = to_matrix(sd->bones[b].translation,
-                                            sd->bones[b].rotation, sd->bones[b].scale);
-            bind[name] = inv_bind.GetInverse();
+            if (name.empty() || offsets.count(name)) continue;
+            offsets[name] = to_matrix(sd->bones[b].translation,
+                                      sd->bones[b].rotation, sd->bones[b].scale);
         }
     }
-    return bind;
+    return offsets;
+}
+
+// The mesh's geomBindTransform maps mesh-local points into the skeleton bind
+// space. LU authors the mesh, the bones and the skin bind in different spaces;
+// the NiSkinData skin-to-bone offset bridges skin space to a bone's local space,
+// and world_bind[bone] takes that to skeleton world. Their product,
+// world_bind[bone] * skinToBone[bone], is the mesh->bind-space transform and is
+// (up to per-bone rounding) the same for every skinned bone — so any skinned
+// bone present in both maps yields it. Returns identity if none can be resolved.
+GfMatrix4d build_geom_bind_transform(const std::map<std::string, GfMatrix4d>& world_bind,
+                                     const std::map<std::string, GfMatrix4d>& skin_to_bone) {
+    for (const auto& [name, offset] : skin_to_bone) {
+        auto wb = world_bind.find(name);
+        if (wb != world_bind.end()) {
+            // row-vector: mesh -> skinToBone (skin->boneLocal) -> boneWorld.
+            return offset * wb->second;
+        }
+    }
+    return GfMatrix4d(1.0);
 }
 
 // Common composition: set up the SkelRoot stage, author the model, then the
@@ -424,6 +434,8 @@ void compose(const std::string& out_path,
     std::vector<std::string> joint_names;   // bare bone names (clip/skin lookup)
     std::vector<std::string> joint_paths;   // sanitized names or "a/b/c" paths
     std::map<std::string, int> joint_lookup; // bone name -> skeleton joint index
+    GfMatrix4d model_geom_bind(1.0);        // mesh-local -> skeleton bind space
+    bool have_geom_bind = false;
 
     if (model) {
         // Wanted set: joints the animation targets or the mesh skins to (kept for
@@ -431,8 +443,7 @@ void compose(const std::string& out_path,
         std::set<std::string> wanted;
         for (const auto& kf : parsed_kfs)
             for (const auto& n : collect_kf_joints(kf, -1)) wanted.insert(n);
-        std::map<std::string, GfMatrix4d> bind_world = build_bind_pose(*model);
-        SkeletonTopology topo = build_skeleton_topology(*model, wanted, bind_world);
+        SkeletonTopology topo = build_skeleton_topology(*model, wanted);
 
         joint_names = topo.joint_names;
         joint_paths = topo.joint_paths;
@@ -440,6 +451,12 @@ void compose(const std::string& out_path,
             joint_lookup[joint_names[i]] = static_cast<int>(i);
 
         author_skeleton_hierarchical(stage, skel_path, topo.joint_paths, topo.local_bind);
+
+        // The mesh lives in a different space than the bones; bridge it into
+        // bone space with a geomBindTransform so skinning resolves correctly.
+        model_geom_bind = build_geom_bind_transform(
+            topo.world_bind, build_skin_to_bone(*model));
+        have_geom_bind = true;
     } else {
         std::set<std::string> seen;
         for (const auto& kf : parsed_kfs)
@@ -453,11 +470,16 @@ void compose(const std::string& out_path,
     }
 
     // Model geometry under /object/Model, skinned to the shared skeleton so it
-    // deforms with the animation (and renders under the SkelRoot).
+    // deforms with the animation (and renders under the SkelRoot). The mesh's
+    // geomBindTransform (authored per skinned mesh) bridges the mesh's authored
+    // space into the bones' bind space, so the skinning resolves to the correct
+    // pose at the origin and animation deltas apply on top — no counter-transform
+    // on the Model prim is needed.
     if (model) {
         UsdGeomXform::Define(stage, root.AppendChild(TfToken("Model")));
         author_nif_model(stage, root.AppendChild(TfToken("Model")), *model, {},
-                         joint_names.empty() ? SdfPath() : skel_path, joint_paths);
+                         joint_names.empty() ? SdfPath() : skel_path, joint_paths,
+                         have_geom_bind ? &model_geom_bind : nullptr);
     }
 
     // Animation clips, all against the shared skeleton; attach KFM transition

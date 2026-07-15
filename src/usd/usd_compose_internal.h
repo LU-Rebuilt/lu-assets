@@ -31,12 +31,16 @@ namespace lu::assets {
 // the skeleton so it deforms with the animation. skel_joints is the skeleton's
 // joint-token ordering (the mesh's per-vertex bone indices are remapped onto it
 // by joint name). Without a skel_path, meshes are authored unskinned (static).
+// geom_bind (optional) is the mesh-local -> skeleton-bind-space transform,
+// authored as each skinned mesh's primvars:skel:geomBindTransform so the skin
+// resolves when the mesh and bones live in different spaces.
 int author_nif_model(const PXR_NS::UsdStagePtr& stage,
                      const PXR_NS::SdfPath& parent_path,
                      const NifFile& nif,
                      const NifToUsdOptions& options = {},
                      const PXR_NS::SdfPath& skel_path = {},
-                     const std::vector<std::string>& skel_joints = {});
+                     const std::vector<std::string>& skel_joints = {},
+                     const PXR_NS::GfMatrix4d* geom_bind = nullptr);
 
 // Author a KF file's clips as UsdSkelAnimations plus a skeleton under
 // parent_path (a SkelRoot). Returns the number of clips authored.

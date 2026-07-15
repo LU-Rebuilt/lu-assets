@@ -1,12 +1,11 @@
 # usd — Universal Scene Description translation layer
 
-> **⚠️ WORK IN PROGRESS.** This whole USD layer is under active development and
-> not production-ready. Static geometry, materials, textures and collision export
-> work well and validate under `usdchecker`. Skeletal **animation playback does
-> not yet work correctly** — the composed rig imports and the model renders at
-> the right scale, but the mesh does not deform when animations play (a
-> node-space vs skin-space reconciliation problem, see "Known limitations"), and
-> a stray oversized display bone remains. Treat animated output as experimental.
+> **⚠️ WORK IN PROGRESS.** This USD layer is under active development. Static
+> geometry, materials, textures and collision export work and validate under
+> `usdchecker`. Composed rigs (model + skeleton + animation) now import into
+> Blender and the skinned mesh **deforms correctly on playback**. Some rough
+> edges remain (a stray oversized display bone from the model's authored bone
+> positions; per-clip decompose warnings on a few animations). Treat as beta.
 
 Bridges LU's native asset formats to [OpenUSD](https://openusd.org) for
 content authoring in DCC tools (Blender, Houdini, Maya, `usdview`). It sits
@@ -31,21 +30,37 @@ not "fully correct". See "Known limitations" for what still fails.
 | 3b | HKX collision → USD | works |
 | 4 | Object composition — gather a whole object (model + all animations + collision) into one stage, driven by a KFM manifest or a CDClient LOT | implemented; **skeletal deform WIP** |
 
+## Skinning & animation (how it fits together)
+
+A composed rig is a `UsdSkelSkeleton` (bone hierarchy from the model's NIF node
+tree, bind pose in node space — the same space the KF animation is authored in),
+`UsdSkelAnimation` clips (per-joint TRS, node space), and skinned `UsdGeomMesh`es
+(joint weights from the NIF). LU authors the mesh, the bones and the skin in
+different coordinate spaces; three pieces bridge them:
+
+- **Skin weights** come from `NiSkinData` when present, else from the
+  `NiSkinPartition` (the GPU-optimized block — many LU models, including the
+  player minifig `mf_main_noLOD`, store their weights only there). The reader
+  parses both; the extractor prefers `NiSkinData` and falls back to the
+  partition.
+- **geomBindTransform** on each skinned mesh maps the mesh's authored space into
+  the bones' bind space (computed as `skinToBoneOffset × boneWorldBind`), so the
+  skin resolves at the correct pose and scale.
+- **Bone-name matching**: NIF skins reference bones by bare name; the skeleton
+  uses hierarchical joint paths, so weights are keyed on each joint path's leaf.
+
+Verified: the composed minifig deforms correctly on playback in Blender.
+
 ## Known limitations (WIP)
 
-- **Animated mesh does not deform.** The composed model renders upright and at
-  the correct scale, and a clip is bound, but playing it does not move the mesh.
-  Root cause: LU KF animation is authored in node-hierarchy space, while some
-  models (e.g. `mf_main_noLOD`, the player minifig) place their skinning bind
-  pose in a different space (bones at Y≈63 while the mesh is ~4 units) via
-  `NiSkinData`. Reconciling the two spaces so the animation drives the skin is
-  unsolved.
-- **Stray oversized display bone.** The skeleton mixes skin-space bind bones
-  (Y≈63) with node-space plumbing bones (Y≈0); the long connection between them
-  draws as a giant bone in Blender. The skinned mesh is unaffected (it renders
-  correctly) — this is a rig-display issue.
+- **Stray oversized display bone.** The model authors some bones far from the
+  origin (Y≈63 while the mesh is ~4 units); Blender draws the connection as a
+  large bone. Cosmetic — the skinned mesh renders and deforms correctly.
+- **A few per-clip decompose warnings** remain on specific animations.
 - **Large objects can overwhelm a DCC viewport.** The minifig's ~1100 clips make
   an ~85 MB stage that can crash interactive Blender; use `object2usd --max-anims N`.
+- usdview/usdrecord may show a composed `SkelRoot` as blank (an auto-framing
+  quirk of Storm with UsdSkel); Blender renders it correctly.
 
 ## `nif_to_usd`
 
