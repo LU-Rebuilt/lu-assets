@@ -20,7 +20,7 @@ Phased effort.
 | 2 | USD → NIF import (client-accepts fidelity bar) | **done** |
 | 3a | KF animation → UsdSkel | **done** |
 | 3b | HKX collision → USD | **done** |
-| 4 | CDClient object composition (gather a LOT's NIF + textures + anims + physics into one stage, and back) | planned |
+| 4 | Object composition — gather a whole object (model + all animations + collision) into one stage, driven by a KFM manifest or a CDClient LOT | **done** |
 
 ## `nif_to_usd`
 
@@ -136,6 +136,77 @@ lifts coverage from ~94% (Mopp/scene-mesh only) to ~99% of corpus files.
 
 Verified on the client corpus: 148/151 sampled HKX files export collision
 geometry, all `usdchecker`-valid (the remainder have no tessellable shape).
+
+## `object_to_usd`
+
+Composes a *whole object* — its render model, its complete animation set and its
+collision — into one USD stage (`object_to_usd.h`). This is the payoff of the
+per-file converters above: rather than juggling separate files, an author opens
+the object as a unit. Two entry points produce the same composed layout:
+
+- **`object_from_kfm(kfm_path, vfs, …)`** — driven by a KFM animation manifest,
+  which names the model NIF, the scene root and every animation sequence/clip.
+- **`object_from_lot(lot, cd, vfs, …)`** — driven by a CDClient LOT: its render
+  component and its physics component(s).
+
+Composed layout:
+
+```
+/object                 (SkelRoot)
+  Model/                model geometry + materials        (author_nif_model)
+  Skeleton              one flat skeleton over the joints
+  anim_<clip> …         one UsdSkelAnimation per KF clip  (author_kf_animations)
+  Collision/
+    <PhysicsType>/      collision meshes per physics component (author_hkx_collision)
+```
+
+Key behaviours:
+
+- **A KFM render asset pulls in both the NIF and the KFs.** A LOT's render
+  component often points at a `.kfm` (animated actors like the minifig), not a
+  `.nif`; when it does, the composer parses it as the manifest and loads the
+  model it names *plus* its whole animation set. A `.nif` render asset is used
+  directly, with a same-stem `.kfm` beside it consulted for animations.
+- **Collision follows the object's physics component(s).** The physics-family
+  component types (ControllablePhysics, SimplePhysics, ProjectilePhysics,
+  RigidBodyPhantomPhysics, PhantomPhysics, VehiclePhysics, PhysicsSystem —
+  RE'd `ComponentType` values) each resolve their `physics_asset` HKX; more than
+  one can coexist (e.g. a phantom trigger volume plus a solid body), so each
+  gets its own labelled sub-scope. The `physics_asset` is read via the generic
+  query interface, not `get_physics_component()`, whose typed column list isn't
+  present in every CDClient schema version.
+- **Animation event keys and transitions are preserved.** A sibling `.etk`
+  (`<name>.etk`) beside each KF supplies `NiExtraTextKeyExtraData` event markers,
+  attached to the clip as `lu:textKeyTimes` / `lu:textKeyEvents`. The KFM
+  transition graph (dest/type/duration per edge) is attached as
+  `lu:transition*` metadata — USD has no native animation-transition schema.
+- **File resolution** goes through a `Vfs` (packed or unpacked client). Asset
+  references are normalized (backslashes → slashes, collapsed runs, `.`/`..`
+  resolved relative to the referring KFM's directory); `.hkx` physics paths are
+  additionally tried under `res/physics/`, where CDClient roots them.
+
+The intermediate `author_*` helpers (`usd_compose_internal.h`) let each per-file
+exporter author into a shared stage under a caller-supplied path, instead of
+each creating its own stage — that is what makes composition possible.
+
+Skinning: when a model composes against the animation skeleton, its skinned
+meshes are bound via `UsdSkelBindingAPI` (joint indices/weights from the NIF
+skin influences, remapped onto the shared skeleton by joint name). The skeleton
+carries the model's real bone hierarchy (joint paths encode parenting) with a
+bind pose from `NiSkinData`, so the composed model renders and stands upright in
+Blender.
+
+**Known limitation (animation playback):** the exported animation samples still
+produce quaternion/matrix values that Blender's USD importer reports as
+non-decomposable ("Error decomposing matrix"), so animated playback of the
+composed rig is not yet correct — the static posed model is fine. This is a
+rotation-sampling/convention issue in `author_clip` (present even for a
+standalone `kf2usd` export with an identity bind pose), isolated from the
+geometry/skeleton/skinning structure, and is the next thing to fix.
+
+Up axis: LU/Gamebryo geometry is **Y-up** (a minifig stands along +Y; ground
+props lie flat in XZ). All exporters declare stages `upAxis = Y` so models
+import upright; `nif2usd --z-up` bakes a rotation for Z-up consumers.
 
 ## OpenUSD resolution
 

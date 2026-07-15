@@ -14,6 +14,7 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdShade/tokens.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/assetPath.h>
@@ -25,7 +26,9 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -121,33 +124,24 @@ UsdShadeMaterial author_material(const UsdStagePtr& stage,
 
 } // namespace
 
-void nif_to_usd(const NifFile& nif,
-                const std::string& out_path,
-                const std::string& source_name,
-                const NifToUsdOptions& options) {
+// Author a NIF's render meshes/materials under root_path on an existing stage.
+// Shared by nif_to_usd (own stage) and the object-composition layer. When
+// skel_path is non-empty, skinned meshes are bound to that skeleton (see the
+// declaration in usd_compose_internal.h).
+int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
+                     const NifFile& nif, const NifToUsdOptions& options,
+                     const SdfPath& skel_path,
+                     const std::vector<std::string>& skel_joints) {
     NifRenderExtractionResult extracted = extractNifRenderGeometry(nif);
 
-    UsdStageRefPtr stage = UsdStage::CreateNew(out_path);
-    if (!stage) {
-        throw NifError("nif_to_usd: failed to create USD stage at " + out_path);
+    // Map skeleton joint name -> index, for remapping a mesh's per-vertex bone
+    // indices (which are relative to the mesh's own bone list) onto the shared
+    // skeleton's joint order.
+    std::unordered_map<std::string, int> skel_joint_index;
+    for (size_t i = 0; i < skel_joints.size(); ++i) {
+        skel_joint_index.emplace(skel_joints[i], static_cast<int>(i));
     }
-
-    // NIF/Gamebryo is Z-up. Tag the stage accordingly rather than silently
-    // reinterpreting axes; a Y-up bake is opt-in via options.convert_to_y_up.
-    UsdGeomSetStageUpAxis(stage,
-        options.convert_to_y_up ? UsdGeomTokens->y : UsdGeomTokens->z);
-    UsdGeomSetStageMetersPerUnit(stage, 1.0);
-    stage->SetMetadata(TfToken("comment"),
-        VtValue("Exported from LU NIF: " + source_name));
-
-    const SdfPath root_path("/model");
-    UsdGeomXform root = UsdGeomXform::Define(stage, root_path);
-    stage->SetDefaultPrim(root.GetPrim());
-
-    // When baking to Y-up, rotate the root -90 about X (Z-up -> Y-up).
-    if (options.convert_to_y_up) {
-        UsdGeomXformCommonAPI(root).SetRotate(GfVec3f(-90.0f, 0.0f, 0.0f));
-    }
+    const bool bind_skin = !skel_path.IsEmpty() && !skel_joints.empty();
 
     std::unordered_set<std::string> used_names;
     uint32_t mesh_counter = 0;
@@ -182,6 +176,19 @@ void nif_to_usd(const NifFile& nif,
             }
         }
         mesh.CreatePointsAttr(VtValue(points));
+
+        // Author the bounding-box extent. Without it Hydra can't cheaply compute
+        // bounds, so usdview's default-camera framing (and "frame selection")
+        // fail and the object appears to be missing in the viewport.
+        if (!points.empty()) {
+            GfVec3f lo = points[0], hi = points[0];
+            for (const auto& p : points) {
+                lo[0] = std::min(lo[0], p[0]); lo[1] = std::min(lo[1], p[1]); lo[2] = std::min(lo[2], p[2]);
+                hi[0] = std::max(hi[0], p[0]); hi[1] = std::max(hi[1], p[1]); hi[2] = std::max(hi[2], p[2]);
+            }
+            VtArray<GfVec3f> extent{lo, hi};
+            mesh.CreateExtentAttr(VtValue(extent));
+        }
         mesh.CreateNormalsAttr(VtValue(normals));
         mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
 
@@ -240,13 +247,100 @@ void nif_to_usd(const NifFile& nif,
                 SdfValueTypeNames->Float, true).Set(rmesh.lod_far);
         }
         if (rmesh.is_skinned) {
-            // Phase 1 only records the bone binding; UsdSkel export is later.
+            // Always record the bone binding as metadata.
             VtArray<std::string> bone_names(
                 rmesh.skin_bone_names.begin(), rmesh.skin_bone_names.end());
             prim.CreateAttribute(TfToken("lu:skinBoneNames"),
                 SdfValueTypeNames->StringArray, true).Set(bone_names);
+
+            // When composing against a skeleton, author a real UsdSkel binding so
+            // the mesh deforms with the animation (and renders under a SkelRoot,
+            // which otherwise skips unbound skinned geometry). Remap the mesh's
+            // per-vertex bone indices (relative to its own bone list) onto the
+            // shared skeleton's joint order by joint name; drop influences whose
+            // bone isn't in the skeleton.
+            if (bind_skin && !rmesh.vertex_influences.empty()) {
+                // Fixed influences-per-vertex count (UsdSkel uses a constant
+                // elementSize). Use the max across vertices, capped for sanity.
+                size_t max_inf = 1;
+                for (const auto& vi : rmesh.vertex_influences) {
+                    max_inf = std::max(max_inf, vi.size());
+                }
+                max_inf = std::min<size_t>(max_inf, 8);
+
+                VtArray<int> joint_indices(rmesh.vertices.size() * max_inf, 0);
+                VtArray<float> joint_weights(rmesh.vertices.size() * max_inf, 0.0f);
+                for (size_t v = 0; v < rmesh.vertices.size(); ++v) {
+                    const auto& infl = v < rmesh.vertex_influences.size()
+                        ? rmesh.vertex_influences[v]
+                        : std::vector<NifRenderSkinInfluence>{};
+                    // Resolve each influence to a skeleton joint index by name.
+                    std::vector<std::pair<int, float>> resolved;
+                    for (const auto& in : infl) {
+                        if (in.bone_index >= rmesh.skin_bone_names.size()) continue;
+                        auto it = skel_joint_index.find(rmesh.skin_bone_names[in.bone_index]);
+                        if (it == skel_joint_index.end()) continue;
+                        resolved.push_back({it->second, in.weight});
+                    }
+                    // Keep the strongest max_inf influences and normalize.
+                    std::sort(resolved.begin(), resolved.end(),
+                              [](auto& a, auto& b) { return a.second > b.second; });
+                    if (resolved.size() > max_inf) resolved.resize(max_inf);
+                    float sum = 0.0f;
+                    for (auto& r : resolved) sum += r.second;
+                    if (sum <= 0.0f && !resolved.empty()) { resolved[0].second = 1.0f; sum = 1.0f; }
+                    for (size_t k = 0; k < resolved.size(); ++k) {
+                        joint_indices[v * max_inf + k] = resolved[k].first;
+                        joint_weights[v * max_inf + k] = sum > 0 ? resolved[k].second / sum : 0.0f;
+                    }
+                }
+
+                UsdSkelBindingAPI skel_binding = UsdSkelBindingAPI::Apply(prim);
+                UsdGeomPrimvar ji = skel_binding.CreateJointIndicesPrimvar(
+                    /*constant=*/false, static_cast<int>(max_inf));
+                ji.Set(joint_indices);
+                UsdGeomPrimvar jw = skel_binding.CreateJointWeightsPrimvar(
+                    /*constant=*/false, static_cast<int>(max_inf));
+                jw.Set(joint_weights);
+                // Bind the mesh to the shared skeleton.
+                skel_binding.CreateSkeletonRel().SetTargets({skel_path});
+            }
         }
     }
+
+    return static_cast<int>(extracted.meshes.size());
+}
+
+void nif_to_usd(const NifFile& nif,
+                const std::string& out_path,
+                const std::string& source_name,
+                const NifToUsdOptions& options) {
+    UsdStageRefPtr stage = UsdStage::CreateNew(out_path);
+    if (!stage) {
+        throw NifError("nif_to_usd: failed to create USD stage at " + out_path);
+    }
+
+    // LU/Gamebryo NIF geometry is Y-up: a minifig stands along +Y, ground props
+    // lie flat in the XZ plane (Y constant). Declare the stage Y-up to match, so
+    // the model imports upright in usdview/Blender rather than on its back. The
+    // legacy convert_to_z_up option bakes a rotation for the rare Z-up consumer.
+    UsdGeomSetStageUpAxis(stage,
+        options.convert_to_z_up ? UsdGeomTokens->z : UsdGeomTokens->y);
+    UsdGeomSetStageMetersPerUnit(stage, 1.0);
+    stage->SetMetadata(TfToken("comment"),
+        VtValue("Exported from LU NIF: " + source_name));
+
+    const SdfPath root_path("/model");
+    UsdGeomXform root = UsdGeomXform::Define(stage, root_path);
+    stage->SetDefaultPrim(root.GetPrim());
+
+    // Bake +90 about X to stand Y-up geometry into a Z-up stage when requested.
+    if (options.convert_to_z_up) {
+        UsdGeomXformCommonAPI(root).SetRotate(GfVec3f(90.0f, 0.0f, 0.0f));
+    }
+
+    // Standalone export: no skeleton to bind against (static meshes).
+    author_nif_model(stage, root_path, nif, options, SdfPath(), {});
 
     stage->GetRootLayer()->Save();
 }

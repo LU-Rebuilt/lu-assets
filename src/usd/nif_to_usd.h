@@ -18,9 +18,10 @@
 //     USD has no native slot for (LOD bands, skin bone bindings) so a future
 //     USD->NIF importer can round-trip them.
 //
-// Skinned meshes: the bone bindings and per-vertex influences are preserved as
-// custom metadata here; full UsdSkel skeleton + animation export lands in a
-// later phase alongside KF/ETK.
+// Skinned meshes: this exporter preserves the bone bindings and per-vertex
+// influences as custom metadata on the mesh. Animation itself is exported
+// separately (kf_to_usd -> UsdSkel), and object_to_usd composes a model with its
+// animation set into one stage.
 
 #include "gamebryo/nif/nif_types.h"
 
@@ -34,10 +35,11 @@ struct NifToUsdOptions {
     bool binary = false;
     // Author authored vertex colors as displayColor/displayOpacity primvars.
     bool export_vertex_colors = true;
-    // Bake the NIF's Z-up world into USD's Y-up by rotating the default prim,
-    // instead of just tagging the stage upAxis = Z. Off by default so exported
-    // coordinates match the NIF exactly (Z-up), which the importer relies on.
-    bool convert_to_y_up = false;
+    // LU NIF geometry is Y-up (a minifig stands along +Y), so the stage is
+    // authored upAxis = Y by default and the model imports upright. Set this to
+    // bake a +90° X rotation and tag the stage Z-up instead, for the rare
+    // consumer that requires Z-up.
+    bool convert_to_z_up = false;
 };
 
 // Convert a parsed NIF into a USD stage written to out_path (.usda / .usdc).

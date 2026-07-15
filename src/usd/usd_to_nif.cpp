@@ -251,15 +251,18 @@ NifFile usd_to_nif(const std::string& usd_path, const UsdToNifOptions& options) 
         throw NifError("usd_to_nif: failed to open USD stage " + usd_path);
     }
 
-    // If the stage is Y-up, we need to rotate geometry back to NIF's Z-up. Bake
-    // it into the world matrix used for every mesh: (x, y, z) -> (x, -z, y).
-    const bool y_up =
-        UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->y || options.force_z_up_from_y;
+    // LU NIF geometry is Y-up, and nif_to_usd authors Y-up stages, so a Y-up
+    // stage maps straight back to NIF coordinates with no rotation. Only a stage
+    // that was explicitly baked to Z-up (upAxis = Z, from nif_to_usd's
+    // convert_to_z_up) needs the inverse -90° X rotation to restore Y-up NIF
+    // coords: (x, y, z) -> (x, z, -y).
+    const bool z_up_stage =
+        UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z || options.force_z_up_from_y;
     GfMatrix4d up_fix(1.0);
-    if (y_up) {
+    if (z_up_stage) {
         up_fix.SetRow(0, GfVec4d(1, 0, 0, 0));
-        up_fix.SetRow(1, GfVec4d(0, 0, 1, 0));
-        up_fix.SetRow(2, GfVec4d(0, -1, 0, 0));
+        up_fix.SetRow(1, GfVec4d(0, 0, -1, 0));
+        up_fix.SetRow(2, GfVec4d(0, 1, 0, 0));
         up_fix.SetRow(3, GfVec4d(0, 0, 0, 1));
     }
 
@@ -269,7 +272,7 @@ NifFile usd_to_nif(const std::string& usd_path, const UsdToNifOptions& options) 
         if (!prim.IsA<UsdGeomMesh>()) continue;
         UsdGeomMesh gmesh(prim);
         GfMatrix4d world = xform_cache.GetLocalToWorldTransform(prim);
-        if (y_up) world = world * up_fix;
+        if (z_up_stage) world = world * up_fix;
 
         ImportMesh im;
         im.name = prim.GetName().GetString();

@@ -1573,8 +1573,12 @@ NifFile nif_parse(std::span<const uint8_t> data) {
                 seq.block_index = block_idx;
                 nif.sequences.push_back(std::move(seq));
             }
-            // NiTextKeyExtraData (timestamped event markers)
-            else if (type_name == "NiTextKeyExtraData") {
+            // NiTextKeyExtraData (timestamped event markers).
+            // LU's .etk files store the same key array under the subclass name
+            // NiExtraTextKeyExtraData (every shipped .etk uses that spelling);
+            // it has the identical NiExtraData layout, so parse both here.
+            else if (type_name == "NiTextKeyExtraData" ||
+                     type_name == "NiExtraTextKeyExtraData") {
                 NifTextKeyExtraData tkd = parse_text_key_extra_data(r, nif.version, nif.string_table);
                 tkd.block_index = block_idx;
                 nif.text_key_data.push_back(std::move(tkd));

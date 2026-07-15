@@ -536,6 +536,34 @@ TEST(NIF, ParseNiTextKeyExtraData) {
     EXPECT_EQ(tkd.keys[1].text, "end");
 }
 
+// LU's .etk files store the same key array under the subclass block-type name
+// "NiExtraTextKeyExtraData" (every shipped .etk uses that spelling). The reader
+// must parse it identically to NiTextKeyExtraData, not drop it.
+TEST(NIF, ParseNiExtraTextKeyExtraData) {
+    NifBuilder block;
+    block.s32(0);       // NiExtraData name = string table index 0
+    block.u32(1);       // 1 text key
+    block.f32(0.25f);   // key time
+    block.s32(1);       // key text = string table index 1
+
+    uint32_t block_size = static_cast<uint32_t>(block.data.size());
+
+    NifBuilder b;
+    write_header(b,
+        {"etkEvents", "footstep"},          // string table
+        {"NiExtraTextKeyExtraData"},        // LU .etk block-type spelling
+        {0},
+        {block_size});
+    b.data.insert(b.data.end(), block.data.begin(), block.data.end());
+    b.u32(0); // footer: Num Roots = 0
+
+    auto nif = nif_parse(b.data);
+    ASSERT_EQ(nif.text_key_data.size(), 1u);
+    ASSERT_EQ(nif.text_key_data[0].keys.size(), 1u);
+    EXPECT_FLOAT_EQ(nif.text_key_data[0].keys[0].time, 0.25f);
+    EXPECT_EQ(nif.text_key_data[0].keys[0].text, "footstep");
+}
+
 // Build a NIF with NiTransformInterpolator block.
 std::pair<std::vector<uint8_t>, uint32_t> build_transform_interpolator_nif() {
     NifBuilder block;

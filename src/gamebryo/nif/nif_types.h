@@ -460,6 +460,8 @@ struct NifKeyQuat {
 
 // NiTextKeyExtraData: timestamped event markers.
 // These mark animation events like "start", "end", footstep triggers, etc.
+// LU's .etk files store the same key array under the subclass name
+// NiExtraTextKeyExtraData (identical layout); the reader parses both into this.
 struct NifTextKeyExtraData {
     std::string name;
     std::vector<NifTextKey> keys;

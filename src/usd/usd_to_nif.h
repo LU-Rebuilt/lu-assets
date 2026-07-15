@@ -20,8 +20,11 @@
 //   - A single root NiNode parents every shape. Per-mesh local transforms are
 //     baked into vertices on export, so shapes use identity transforms here.
 //
-// Not yet handled (later phases): skeletons/skinning (UsdSkel), animation,
-// collision, LOD nodes, and multi-level scene-graph hierarchy — a flat
+// Scope of this importer: it reconstructs render geometry + materials only.
+// USD->animation (back to KF) and USD->collision (back to HKX) import are not
+// implemented — the export direction covers those (kf_to_usd, hkx_to_usd), but
+// the reverse is a separate effort. Skeletons/skinning, LOD nodes and
+// multi-level scene-graph hierarchy are likewise not reconstructed here: a flat
 // root-node scene is emitted. The lu:* custom attributes nif_to_usd writes are
 // consulted where present to better reconstruct LOD/material provenance.
 

@@ -14,6 +14,7 @@
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/tf/token.h>
 
+#include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <stdexcept>
@@ -91,6 +92,17 @@ int author_hkx_collision(const UsdStagePtr& stage, const SdfPath& parent_path,
         }
         mesh.CreatePointsAttr(VtValue(points));
 
+        // Bounding-box extent so Hydra can frame the collision geometry.
+        if (!points.empty()) {
+            GfVec3f lo = points[0], hi = points[0];
+            for (const auto& p : points) {
+                lo[0] = std::min(lo[0], p[0]); lo[1] = std::min(lo[1], p[1]); lo[2] = std::min(lo[2], p[2]);
+                hi[0] = std::max(hi[0], p[0]); hi[1] = std::max(hi[1], p[1]); hi[2] = std::max(hi[2], p[2]);
+            }
+            VtArray<GfVec3f> extent{lo, hi};
+            mesh.CreateExtentAttr(VtValue(extent));
+        }
+
         VtArray<int> counts(m.indices.size() / 3, 3);
         VtArray<int> indices;
         indices.reserve(m.indices.size());
@@ -120,7 +132,7 @@ void hkx_to_usd(const std::string& hkx_path,
     UsdStageRefPtr stage = UsdStage::CreateNew(out_path);
     if (!stage) throw std::runtime_error("hkx_to_usd: failed to create USD stage at " + out_path);
 
-    UsdGeomSetStageUpAxis(stage, UsdGeomTokens->z); // Havok/NIF Z-up
+    UsdGeomSetStageUpAxis(stage, UsdGeomTokens->y); // LU/Gamebryo geometry is Y-up
     UsdGeomSetStageMetersPerUnit(stage, 1.0);
     stage->SetMetadata(TfToken("comment"), VtValue("Exported from LU HKX: " + source_name));
 
