@@ -44,10 +44,10 @@ jobs:
             name: Linux
           - os: windows-latest
             name: Windows
-          - os: macos-14
+          - os: macos-15
             name: macOS ARM64
             cmake_extra: ""
-          - os: macos-14
+          - os: macos-15
             name: macOS x86_64 (cross)
             cmake_extra: -DCMAKE_OSX_ARCHITECTURES=x86_64
 
