@@ -17,4 +17,4 @@ add_executable(test_netdevil
 )
 
 target_link_libraries(test_netdevil PRIVATE lu_assets GTest::gtest_main)
-gtest_discover_tests(test_netdevil)
+gtest_discover_tests(test_netdevil DISCOVERY_TIMEOUT ${LU_ASSETS_GTEST_DISCOVERY_TIMEOUT})

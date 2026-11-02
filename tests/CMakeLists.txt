@@ -1,3 +1,9 @@
+# gtest_discover_tests runs each test binary at build time to list its cases,
+# with a 5 s default timeout. The macOS x86_64 CI job cross-compiles on an
+# arm64 runner, so discovery runs under Rosetta, whose first launch of a large
+# binary can exceed that and fail the build. Give discovery more headroom.
+set(LU_ASSETS_GTEST_DISCOVERY_TIMEOUT 120)
+
 add_subdirectory(common)
 add_subdirectory(netdevil)
 add_subdirectory(gamebryo)

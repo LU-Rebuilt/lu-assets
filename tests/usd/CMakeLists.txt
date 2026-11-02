@@ -6,4 +6,4 @@ add_executable(test_usd
 
 # lu_assets_usd already brings in OpenUSD (public link deps).
 target_link_libraries(test_usd PRIVATE lu_assets_usd GTest::gtest_main)
-gtest_discover_tests(test_usd)
+gtest_discover_tests(test_usd DISCOVERY_TIMEOUT ${LU_ASSETS_GTEST_DISCOVERY_TIMEOUT})

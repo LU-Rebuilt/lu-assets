@@ -6,4 +6,4 @@ add_executable(test_gamebryo
 )
 
 target_link_libraries(test_gamebryo PRIVATE lu_assets GTest::gtest_main)
-gtest_discover_tests(test_gamebryo)
+gtest_discover_tests(test_gamebryo DISCOVERY_TIMEOUT ${LU_ASSETS_GTEST_DISCOVERY_TIMEOUT})

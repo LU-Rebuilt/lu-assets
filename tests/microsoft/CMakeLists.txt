@@ -4,4 +4,4 @@ add_executable(test_microsoft
 )
 
 target_link_libraries(test_microsoft PRIVATE lu_assets GTest::gtest_main)
-gtest_discover_tests(test_microsoft)
+gtest_discover_tests(test_microsoft DISCOVERY_TIMEOUT ${LU_ASSETS_GTEST_DISCOVERY_TIMEOUT})

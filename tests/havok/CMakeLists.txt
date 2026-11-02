@@ -7,4 +7,4 @@ add_executable(test_havok
 )
 
 target_link_libraries(test_havok PRIVATE lu_assets GTest::gtest_main)
-gtest_discover_tests(test_havok)
+gtest_discover_tests(test_havok DISCOVERY_TIMEOUT ${LU_ASSETS_GTEST_DISCOVERY_TIMEOUT})
