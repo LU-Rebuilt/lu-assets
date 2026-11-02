@@ -4,7 +4,10 @@
 
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/variantSets.h>
+#include <pxr/usd/usd/editContext.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
 #include <pxr/usd/usdGeom/primvar.h>
@@ -27,6 +30,7 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -155,6 +159,11 @@ int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
     std::unordered_set<std::string> used_names;
     uint32_t mesh_counter = 0;
 
+    // Track (LOD level -> mesh prim paths) so multiple LOD meshes of one model
+    // can be exposed as a "LOD" variant set instead of overlapping.
+    std::map<uint32_t, std::vector<SdfPath>> lod_meshes;
+    bool any_lod = false;
+
     for (const NifRenderMesh& rmesh : extracted.meshes) {
         const std::string base = sanitize_prim_name(
             rmesh.name, "mesh_" + std::to_string(mesh_counter));
@@ -163,6 +172,11 @@ int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
 
         const SdfPath mesh_path = root_path.AppendChild(TfToken(prim_name));
         UsdGeomMesh mesh = UsdGeomMesh::Define(stage, mesh_path);
+
+        if (rmesh.has_lod_range) {
+            lod_meshes[rmesh.lod_level].push_back(mesh_path);
+            any_lod = true;
+        }
 
         // Points, normals, uvs.
         VtArray<GfVec3f> points;
@@ -324,6 +338,36 @@ int author_nif_model(const UsdStagePtr& stage, const SdfPath& root_path,
                 }
             }
         }
+    }
+
+    // Expose LOD levels as a "LOD" variant set on the parent prim: each variant
+    // makes one level's meshes visible and the others invisible. The highest
+    // detail (lowest level number) is the default so the model shows fully by
+    // default. Without this the LOD meshes would all render on top of each other.
+    if (any_lod && lod_meshes.size() > 1) {
+        UsdPrim parent = stage->GetPrimAtPath(root_path);
+        if (!parent) parent = UsdGeomXform::Define(stage, root_path).GetPrim();
+        UsdVariantSet lod_vset = parent.GetVariantSets().AddVariantSet("LOD");
+        for (const auto& [level, paths] : lod_meshes) {
+            const std::string vname = "LOD" + std::to_string(level);
+            lod_vset.AddVariant(vname);
+            lod_vset.SetVariantSelection(vname);
+            {
+                UsdEditContext ctx(lod_vset.GetVariantEditContext());
+                // In this variant, only this level's meshes are visible.
+                for (const auto& [other_level, other_paths] : lod_meshes) {
+                    const bool visible = other_level == level;
+                    for (const SdfPath& mp : other_paths) {
+                        UsdGeomImageable img(stage->GetPrimAtPath(mp));
+                        if (!img) continue;
+                        if (visible) img.MakeVisible();
+                        else img.MakeInvisible();
+                    }
+                }
+            }
+        }
+        // Default to the highest-detail level (smallest level number).
+        lod_vset.SetVariantSelection("LOD" + std::to_string(lod_meshes.begin()->first));
     }
 
     return static_cast<int>(extracted.meshes.size());

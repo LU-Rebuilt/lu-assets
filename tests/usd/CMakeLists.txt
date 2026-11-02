@@ -1,5 +1,6 @@
 add_executable(test_usd
     test_nif_usd_roundtrip.cpp
+    test_nif_usd_lod.cpp
     test_kf_usd.cpp
 )
 

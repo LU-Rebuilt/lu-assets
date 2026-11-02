@@ -87,6 +87,13 @@ Exported per render mesh:
 - **LU-specific data** as `lu:*` custom attributes (source block indices, LOD
   near/far bands, skin bone names) — data USD has no native slot for, kept so a
   future USD→NIF importer can reconstruct it.
+- **LOD switch** — when the model's `NiLODNode`s band meshes into more than one
+  level, the model prim gets a `LOD` variant set with one `LOD<level>` variant
+  per level. Each variant leaves only that level's meshes visible (the others
+  are authored `invisible` inside the variant), so the levels no longer render
+  on top of each other. The default selection is the highest detail (lowest
+  level number); meshes outside any LOD node stay visible in every variant. A
+  model with a single LOD level gets no variant set.
 
 Stage metadata records Z-up (NIF/Gamebryo convention), meters, and the source
 filename. `NifToUsdOptions::convert_to_y_up` instead bakes a -90° X rotation on
@@ -127,7 +134,9 @@ and `NiTexturingProperty` ends with an unconditional `Num Shader Textures` u32
 after the (absent-here) decal slots.
 
 Not yet imported: skeletons/skinning, animation, collision, LOD nodes, and
-multi-level hierarchy (a flat root-node scene is emitted). Round-trip verified
+multi-level hierarchy (a flat root-node scene is emitted). Meshes are imported
+regardless of visibility, so every level of an exported `LOD` variant set comes
+back as a mesh, but the variant set is not rebuilt into a `NiLODNode`. Round-trip verified
 on the client corpus: geometry (vertex/triangle counts, positions, UVs),
 material colours and texture paths survive NIF → USD → NIF.
 

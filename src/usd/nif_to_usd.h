@@ -17,6 +17,9 @@
 //     filename, and per-mesh custom attributes carrying LU-specific data that
 //     USD has no native slot for (LOD bands, skin bone bindings) so a future
 //     USD->NIF importer can round-trip them.
+//   - A "LOD" variant set on the model prim when NiLODNodes band the meshes
+//     into more than one level: variant "LOD<level>" leaves only that level's
+//     meshes visible, defaulting to the highest detail (lowest level).
 //
 // Skinned meshes: this exporter preserves the bone bindings and per-vertex
 // influences as custom metadata on the mesh. Animation itself is exported
