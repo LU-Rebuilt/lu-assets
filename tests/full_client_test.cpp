@@ -28,54 +28,101 @@
 #include <filesystem>
 #include <chrono>
 #include <map>
+#include <set>
 #include <functional>
 
 namespace fs = std::filesystem;
 
-std::vector<uint8_t> read_file(const std::string& path) {
+// Reads a whole file into `out`. Returns false when the file can't be opened
+// or read in full, for example when it's a cloud-storage placeholder whose
+// download fails (iCloud's "Optimize Mac Storage") or it isn't readable.
+// Those files are counted as unreadable, not as parse failures: before this
+// check, a failed read left a zero-filled buffer that then "failed to parse".
+bool read_file(const std::string& path, std::vector<uint8_t>& out) {
+    out.clear();
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return {};
-    auto sz = f.tellg(); f.seekg(0);
-    std::vector<uint8_t> d(sz);
-    f.read(reinterpret_cast<char*>(d.data()), sz);
-    return d;
+    if (!f) return false;
+    auto sz = f.tellg();
+    if (sz < 0) return false;
+    f.seekg(0);
+    out.resize(static_cast<size_t>(sz));
+    if (sz > 0 && !f.read(reinterpret_cast<char*>(out.data()), sz)) {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 struct FormatResult {
     int ok = 0;
     int fail = 0;
+    int unreadable = 0;                // files that couldn't be read (not parsed)
     std::vector<std::string> failures; // First 5 failure messages
 };
+
+// Folders that couldn't be listed. They are skipped and listed in the summary
+// instead of ending the run with an uncaught filesystem_error. A set, because
+// several formats scan the same folders.
+std::set<std::string> g_unlistable_dirs;
+
+// Calls fn for every regular file under base, like recursive_directory_iterator
+// (folder symlinks aren't followed), but a folder that can't be listed is
+// recorded and skipped. fn returns false to stop early.
+void for_each_file(const fs::path& base, const std::function<bool(const fs::path&)>& fn) {
+    std::error_code ec;
+    if (!fs::is_directory(base, ec)) return;
+    std::vector<fs::path> pending{base};
+    while (!pending.empty()) {
+        fs::path dir = std::move(pending.back());
+        pending.pop_back();
+        fs::directory_iterator it(dir, ec);
+        for (; !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            std::error_code sec;
+            if (it->is_symlink(sec)) {
+                if (it->is_regular_file(sec) && !fn(it->path())) return;
+            } else if (it->is_directory(sec)) {
+                pending.push_back(it->path());
+            } else if (it->is_regular_file(sec)) {
+                if (!fn(it->path())) return;
+            }
+        }
+        if (ec) {
+            g_unlistable_dirs.insert(dir.string() + ": " + ec.message());
+            ec.clear();
+        }
+    }
+}
 
 using ParseFunc = std::function<void(const std::vector<uint8_t>&)>;
 
 FormatResult test_format(const std::string& base, const std::string& ext,
                          ParseFunc parser, int max_files = 0) {
     FormatResult result;
-    if (!fs::exists(base)) return result;
     int count = 0;
-    for (auto& e : fs::recursive_directory_iterator(base)) {
-        if (!e.is_regular_file()) continue;
-        auto fext = e.path().extension().string();
+    std::vector<uint8_t> data;
+    for_each_file(base, [&](const fs::path& p) {
+        auto fext = p.extension().string();
         // Handle multi-char extensions like .g1, .g2
         if (ext == ".g") {
-            if (fext != ".g" && (fext.size() != 3 || fext[0] != '.' || fext[1] != 'g')) continue;
+            if (fext != ".g" && (fext.size() != 3 || fext[0] != '.' || fext[1] != 'g')) return true;
         } else {
-            if (fext != ext) continue;
+            if (fext != ext) return true;
         }
-        auto data = read_file(e.path().string());
-        if (data.empty()) { result.fail++; continue; }
+        if (!read_file(p.string(), data)) {
+            result.unreadable++;
+            return true;
+        }
         try {
             parser(data);
             result.ok++;
         } catch (const std::exception& ex) {
             result.fail++;
             if (result.failures.size() < 5) {
-                result.failures.push_back(e.path().filename().string() + ": " + ex.what());
+                result.failures.push_back(p.filename().string() + ": " + ex.what());
             }
         }
-        if (max_files > 0 && ++count >= max_files) break;
-    }
+        return !(max_files > 0 && ++count >= max_files);
+    });
     return result;
 }
 
@@ -85,16 +132,23 @@ int main(int argc, char* argv[]) {
 
     printf("=== FULL CLIENT FORMAT VALIDATION ===\n");
     printf("Client path: %s\n\n", BASE.c_str());
+    // A full client takes minutes to check, so every result is flushed as soon
+    // as it's printed, even when the output goes to a pipe or a log file.
+    fflush(stdout);
 
     auto t0 = std::chrono::steady_clock::now();
-    int total_ok = 0, total_fail = 0;
+    int total_ok = 0, total_fail = 0, total_unreadable = 0;
 
     auto report = [&](const char* name, const FormatResult& r) {
         float pct = (r.ok + r.fail) > 0 ? 100.0f * r.ok / (r.ok + r.fail) : 0;
-        printf("%-15s %6d/%6d  (%5.1f%%)\n", name, r.ok, r.ok + r.fail, pct);
+        printf("%-15s %6d/%6d  (%5.1f%%)", name, r.ok, r.ok + r.fail, pct);
+        if (r.unreadable > 0) printf("  + %d unreadable", r.unreadable);
+        printf("\n");
         for (auto& f : r.failures) printf("  FAIL: %s\n", f.c_str());
+        fflush(stdout);
         total_ok += r.ok;
         total_fail += r.fail;
+        total_unreadable += r.unreadable;
     };
 
     // NetDevil formats
@@ -193,20 +247,22 @@ int main(int argc, char* argv[]) {
     // in the corresponding FSB4 header (confirmed against all 5 newcontent banks).
     {
         FormatResult r;
-        for (auto& e : fs::recursive_directory_iterator(BASE + "/audio")) {
-            if (!e.is_regular_file() || e.path().extension() != ".fev") continue;
+        std::vector<uint8_t> fev_data, fsb_data;
+        for_each_file(BASE + "/audio", [&](const fs::path& p) {
+            if (p.extension() != ".fev") return true;
+            if (!read_file(p.string(), fev_data)) { r.unreadable++; return true; }
             try {
-                auto fev_data = read_file(e.path().string());
                 auto fev = lu::assets::fev_parse(fev_data);
-                auto dir = e.path().parent_path();
+                auto dir = p.parent_path();
                 for (auto& bank : fev.banks) {
                     // Strip null terminator from bank name if present
                     std::string bname = bank.name;
                     if (!bname.empty() && bname.back() == '\0')
                         bname.pop_back();
                     fs::path fsb_path = dir / (bname + ".fsb");
-                    if (!fs::exists(fsb_path)) { r.ok++; continue; } // bank not in same dir
-                    auto fsb_data = read_file(fsb_path.string());
+                    std::error_code ec;
+                    if (!fs::exists(fsb_path, ec)) { r.ok++; continue; } // bank not in same dir
+                    if (!read_file(fsb_path.string(), fsb_data)) { r.unreadable++; continue; }
                     lu::assets::fsb_decrypt(fsb_data, lu::assets::FSB_LU_KEY);
                     if (lu::assets::fev_verify_bank_checksum(bank, fsb_data))
                         r.ok++;
@@ -216,7 +272,8 @@ int main(int argc, char* argv[]) {
             } catch (...) {
                 r.fail++;
             }
-        }
+            return true;
+        });
         report(".fev<->.fsb checksums", r);
     }
 
@@ -234,17 +291,22 @@ int main(int argc, char* argv[]) {
     // are counted as "skipped"; no failures are counted for unrecognized formats.
     {
         std::string pack_dir = BASE + "/../pack"; // packed client res/pack directory
-        if (fs::exists(pack_dir)) {
+        std::error_code pack_ec;
+        if (fs::is_directory(pack_dir, pack_ec)) {
             // Per-format result tracking for recognizable formats
             std::map<std::string, FormatResult> pk_results;
             FormatResult total_entries;   // all extracted entries (success = extracted OK)
             FormatResult skipped;         // entries whose format is not detectable by magic
 
-            for (auto& e : fs::directory_iterator(pack_dir)) {
-                if (!e.is_regular_file() || e.path().extension() != ".pk") continue;
-                if (e.file_size() > 400 * 1024 * 1024) continue; // skip PK files > 400 MB for speed
+            std::vector<uint8_t> pk_data;
+            fs::directory_iterator pk_it(pack_dir, pack_ec);
+            for (; !pack_ec && pk_it != fs::directory_iterator(); pk_it.increment(pack_ec)) {
+                const auto& e = *pk_it;
+                std::error_code sec;
+                if (!e.is_regular_file(sec) || e.path().extension() != ".pk") continue;
+                if (e.file_size(sec) > 400 * 1024 * 1024) continue; // skip PK files > 400 MB for speed
 
-                auto pk_data = read_file(e.path().string());
+                if (!read_file(e.path().string(), pk_data)) { total_entries.unreadable++; continue; }
                 lu::assets::PkArchive pk(pk_data);
 
                 pk.for_each([&](size_t /*idx*/, const lu::assets::PackIndexEntry& entry) {
@@ -342,6 +404,7 @@ int main(int argc, char* argv[]) {
                     }
                 });
             }
+            if (pack_ec) g_unlistable_dirs.insert(pack_dir + ": " + pack_ec.message());
 
             // Report extraction pipeline
             report("pk(extract)", total_entries);
@@ -356,8 +419,21 @@ int main(int argc, char* argv[]) {
         std::chrono::steady_clock::now() - t0).count();
 
     printf("\n=== SUMMARY ===\n");
-    printf("Total: %d/%d ok (%.1f%%)\n", total_ok, total_ok + total_fail,
-           100.0f * total_ok / (total_ok + total_fail));
+    int total_checked = total_ok + total_fail;
+    printf("Total: %d/%d ok (%.1f%%)\n", total_ok, total_checked,
+           total_checked > 0 ? 100.0f * total_ok / total_checked : 0.0f);
+    if (total_unreadable > 0) {
+        printf("Unreadable files (not checked): %d. Usually permissions, or "
+               "cloud-storage files that aren't downloaded.\n", total_unreadable);
+    }
+    if (!g_unlistable_dirs.empty()) {
+        printf("Folders skipped (couldn't be listed): %zu\n", g_unlistable_dirs.size());
+        size_t shown = 0;
+        for (const auto& d : g_unlistable_dirs) {
+            if (shown++ == 5) break;
+            printf("  %s\n", d.c_str());
+        }
+    }
     printf("Time: %lds\n", elapsed);
 
     return total_fail > 0 ? 1 : 0;
